@@ -1,0 +1,28 @@
+{
+  "TestBeds": [
+    {
+      "Name": "Default",
+      "Controllers": {
+        # Put device serials shown in `adb devices`
+        # Do not change the order!
+        "AndroidDevice": [
+          {
+            "serial": "33141FDJH0002A",
+            "label": "DUT"
+          },
+          {
+            "serial": "33141FDJH0002B",
+            "label": "REF"
+          },
+          {
+            "serial": "33141FDJH0002C",
+            "label": "REF"
+          }
+        ]
+      },
+      "TestParams": {
+        "max_retry_count": 2
+      }
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "navi"
+version = "0.1.0"
+authors = [
+    { name = "Google", email = "pixel-bluetooth-testing-dev@google.com" },
+]
+requires-python = ">=3.11"
+dependencies = [
+    "bumble==0.0.209",
+    "mobly",
+    "typing_extensions",
+    "pydub",
+    "absl-py",
+    "snippet-uiautomator",
+    "setuptools>=61.0.0",
+    "numpy",
+]
+
+[tool.setuptools]
+py-modules = ["_build"]
+packages = ["navi", "navi.tests", "navi.utils", "navi.bumble_ext"]
+
+[tool.setuptools.cmdclass]
+build_py = "_build.build_py"
+
+[tool.setuptools.package-data]
+"*" = ["*.pyi", "py.typed", "*.json", "*.mp3", "android_hci_proxy_*", "*.apk"]

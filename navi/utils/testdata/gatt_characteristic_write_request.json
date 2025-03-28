@@ -1,0 +1,9 @@
+{
+  "device": "00:11:22:33:44:55",
+  "uuid": "00000000-0000-0000-0000-000000000001",
+  "request_id": 1,
+  "offset": 2,
+  "value": [1,2,3],
+  "response_needed": true,
+  "prepared_write": false
+}

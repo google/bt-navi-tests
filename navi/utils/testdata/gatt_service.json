@@ -1,0 +1,27 @@
+[
+  {
+    "handle": 1,
+    "uuid": "00001800-0000-1000-8000-00805f9b34fb",
+    "type": 0,
+    "characteristics": [
+      {
+        "handle": 3,
+        "uuid": "00002a00-0000-1000-8000-00805f9b34fb",
+        "permissions": 0,
+        "properties": 2
+      },
+      {
+        "handle": 5,
+        "uuid": "00002a01-0000-1000-8000-00805f9b34fb",
+        "permissions": 0,
+        "properties": 2,
+        "descriptors": [
+          {
+            "uuid": "00002902-0000-1000-8000-00805f9b34fb",
+            "permissions": 0
+          }
+        ]
+      }
+    ]
+  }
+]

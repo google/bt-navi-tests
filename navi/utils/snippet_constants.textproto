@@ -1,0 +1,777 @@
+# proto-file: tools/build_defs/constants_gen/proto/constants.proto
+# proto-message: Constants
+
+# =========================== #
+# Data fields                 #
+# =========================== #
+
+constants {
+  name: "FIELD_DEVICE"
+  string_value: "device"
+}
+
+constants {
+  name: "FIELD_STATE"
+  string_value: "state"
+}
+
+constants {
+  name: "FIELD_STATUS"
+  string_value: "status"
+}
+
+constants {
+  name: "FIELD_VARIANT"
+  string_value: "variant"
+}
+
+constants {
+  name: "FIELD_PIN"
+  string_value: "pin"
+}
+
+constants {
+  name: "FIELD_TRANSPORT"
+  string_value: "transport"
+}
+
+constants {
+  name: "FIELD_NAME"
+  string_value: "name"
+}
+
+constants {
+  name: "FIELD_RESULT"
+  string_value: "result"
+}
+
+constants {
+  name: "FIELD_REASON"
+  string_value: "reason"
+}
+
+constants {
+  name: "FIELD_SOURCE_ID"
+  string_value: "source_id"
+}
+
+constants {
+  name: "FIELD_SINK_DEVICE"
+  string_value: "sink_device"
+}
+
+constants {
+  name: "FIELD_BROADCAST_ID"
+  string_value: "broadcast_id"
+}
+
+constants {
+  name: "FIELD_HANDLE"
+  string_value: "handle"
+}
+
+constants {
+  name: "FIELD_VALUE"
+  string_value: "value"
+}
+
+constants {
+  name: "FIELD_UUID"
+  string_value: "uuid"
+}
+
+constants {
+  name: "FIELD_TYPE"
+  string_value: "type"
+}
+
+constants {
+  name: "FIELD_ID"
+  string_value: "id"
+}
+
+constants {
+  name: "FIELD_ADDRESS_TYPE"
+  string_value: "address_type"
+}
+
+constants {
+  name: "FIELD_TX_PHY"
+  string_value: "tx_phy"
+}
+
+constants {
+  name: "FIELD_RX_PHY"
+  string_value: "rx_phy"
+}
+
+constants {
+  name: "FIELD_MTU"
+  string_value: "mtu"
+}
+
+constants {
+  name: "FIELD_SOURCE"
+  string_value: "source"
+}
+
+# =========================== #
+# General                     #
+# =========================== #
+
+constants {
+  name: "PROFILE_CONNECTION_STATE_CHANGE"
+  string_value: "PROFILE_CONNECTION_STATE_CHANGE"
+}
+
+constants {
+  name: "ACTIVE_DEVICE_CHANGED"
+  string_value: "ACTIVE_DEVICE_CHANGED"
+}
+
+# =========================== #
+# BluetoothAdapterSnippet     #
+# =========================== #
+
+constants {
+  name: "PAIRING_REQUEST"
+  string_value: "PAIRING_REQUEST"
+}
+
+constants {
+  name: "BOND_STATE_CHANGE"
+  string_value: "BOND_STATE_CHANGE"
+}
+
+constants {
+  name: "ACL_CONNECTED"
+  string_value: "ACL_CONNECTED"
+}
+
+constants {
+  name: "ACL_DISCONNECTED"
+  string_value: "ACL_DISCONNECTED"
+}
+
+constants {
+  name: "DEVICE_FOUND"
+  string_value: "DEVICE_FOUND"
+}
+
+constants {
+  name: "SCAN_RESULT"
+  string_value: "SCAN_RESULT"
+}
+
+constants {
+  name: "BATTERY_LEVEL_CHANGED"
+  string_value: "BATTERY_LEVEL_CHANGED"
+}
+
+constants {
+  name: "ADV_PARAMETER_CONNECTABLE"
+  string_value: "connectable"
+}
+
+constants {
+  name: "ADV_PARAMETER_DISCOVERABLE"
+  string_value: "discoverable"
+}
+
+constants {
+  name: "ADV_PARAMETER_OWN_ADDRESS_TYPE"
+  string_value: "own_address_type"
+}
+
+constants {
+  name: "ADV_PARAMETER_TIMEOUT"
+  string_value: "timeout"
+}
+
+constants {
+  name: "ADV_PARAMETER_TX_POWER_LEVEL"
+  string_value: "tx_power_level"
+}
+
+constants {
+  name: "ADV_PARAMETER_ADVERTISE_MODE"
+  string_value: "advertise_mode"
+}
+
+constants {
+  name: "ADV_PARAMETER_ANONYMOUS"
+  string_value: "anonymous"
+}
+
+constants {
+  name: "ADV_PARAMETER_LEGACY"
+  string_value: "legacy"
+}
+
+constants {
+  name: "ADV_PARAMETER_SCANNABLE"
+  string_value: "scannable"
+}
+
+constants {
+  name: "ADV_PARAMETER_PRIMARY_PHY"
+  string_value: "primary_phy"
+}
+
+constants {
+  name: "ADV_PARAMETER_SECONDARY_PHY"
+  string_value: "secondary_phy"
+}
+
+constants {
+  name: "ADV_PARAMETER_INTERVAL"
+  string_value: "interval"
+}
+
+constants {
+  name: "ADV_DATA_FLAGS"
+  string_value: "flags"
+}
+
+constants {
+  name: "ADV_DATA_INCLUDE_DEVICE_NAME"
+  string_value: "include_device_name"
+}
+
+constants {
+  name: "ADV_DATA_INCLUDE_TX_POWER_LEVEL"
+  string_value: "include_tx_power_level"
+}
+
+constants {
+  name: "ADV_DATA_SERVICE_UUID"
+  string_value: "service_uuids"
+}
+
+constants {
+  name: "ADV_DATA_SERVICE_DATA"
+  string_value: "service_data"
+}
+
+constants {
+  name: "ADV_DATA_MANUFACTURER_DATA"
+  string_value: "manufacturer_data"
+}
+
+constants {
+  name: "ADV_DATA_SERVICE_SOLICITATION_UUIDS"
+  string_value: "service_solicitation_uuids"
+}
+
+constants {
+  name: "ADV_DATA_TYPE"
+  string_value: "advertising_data_type"
+}
+
+constants {
+  name: "ADV_REPORT_SID"
+  string_value: "sid"
+}
+
+constants {
+  name: "ADV_REPORT_RSSI"
+  string_value: "rssi"
+}
+
+constants {
+  name: "ADV_REPORT_PA_INTERVAL"
+  string_value: "pa_interval"
+}
+
+constants {
+  name: "ADV_REPORT_TIMESTAMP"
+  string_value: "timestamp"
+}
+
+constants {
+  name: "SCAN_PARAM_SCAN_MODE"
+  string_value: "scan_mode"
+}
+
+constants {
+  name: "SCAN_PARAM_CALLBACK_TYPE"
+  string_value: "callback_type"
+}
+
+constants {
+  name: "SCAN_PARAM_SCAN_RESULT_TYPE"
+  string_value: "scan_result_type"
+}
+
+constants {
+  name: "SCAN_PARAM_PHY"
+  string_value: "phy"
+}
+
+# =========================== #
+# BluetoothGattClientSnippet  #
+# =========================== #
+
+constants {
+  name: "GATT_FIELD_TYPE"
+  string_value: "type"
+}
+
+constants {
+  name: "GATT_FIELD_CHARACTERISTICS"
+  string_value: "characteristics"
+}
+
+constants {
+  name: "GATT_FIELD_DESCRIPTORS"
+  string_value: "descriptors"
+}
+
+constants {
+  name: "GATT_FIELD_PROPERTIES"
+  string_value: "properties"
+}
+
+constants {
+  name: "GATT_FIELD_PERMISSIONS"
+  string_value: "permissions"
+}
+
+constants {
+  name: "GATT_CONNECTION_STATE_CHANGE"
+  string_value: "GATT_CONNECTION_STATE_CHANGE"
+}
+
+constants {
+  name: "GATT_SERVICE_DISCOVERED"
+  string_value: "GATT_SERVICE_DISCOVERED"
+}
+
+constants {
+  name: "GATT_SERVICE_CHANGED"
+  string_value: "GATT_SERVICE_CHANGED"
+}
+
+constants {
+  name: "GATT_CHARACTERISTIC_READ"
+  string_value: "GATT_CHARACTERISTIC_READ"
+}
+
+constants {
+  name: "GATT_CHARACTERISTIC_WRITE"
+  string_value: "GATT_CHARACTERISTIC_WRITE"
+}
+
+constants {
+  name: "GATT_CHARACTERISTIC_CHANGED"
+  string_value: "GATT_CHARACTERISTIC_CHANGED"
+}
+
+constants {
+  name: "GATT_DESCRIPTOR_READ"
+  string_value: "GATT_DESCRIPTOR_READ"
+}
+
+constants {
+  name: "GATT_DESCRIPTOR_WRITE"
+  string_value: "GATT_DESCRIPTOR_WRITE"
+}
+
+constants {
+  name: "GATT_PHY_UPDATE"
+  string_value: "GATT_PHY_UPDATE"
+}
+
+constants {
+  name: "GATT_MTU_CHANGED"
+  string_value: "GATT_MTU_CHANGED"
+}
+
+# =========================== #
+# BluetoothGattServerSnippet  #
+# =========================== #
+
+constants {
+  name: "GATT_FIELD_REQUEST_ID"
+  string_value: "request_id"
+}
+
+constants {
+  name: "GATT_FIELD_OFFSET"
+  string_value: "offset"
+}
+
+constants {
+  name: "GATT_FIELD_PREPARED_WRITE"
+  string_value: "prepared_write"
+}
+
+constants {
+  name: "GATT_FIELD_RESPONSE_NEEDED"
+  string_value: "response_needed"
+}
+
+constants {
+  name: "GATT_SERVER_CONNECTION_STATE_CHANGE"
+  string_value: "GATT_SERVER_CONNECTION_STATE_CHANGE"
+}
+
+constants {
+  name: "GATT_SERVER_SERVICE_ADDED"
+  string_value: "GATT_SERVER_SERVICE_ADDED"
+}
+
+constants {
+  name: "GATT_SERVER_CHARACTERISTIC_READ_REQUEST"
+  string_value: "GATT_SERVER_CHARACTERISTIC_READ_REQUEST"
+}
+
+constants {
+  name: "GATT_SERVER_CHARACTERISTIC_WRITE_REQUEST"
+  string_value: "GATT_SERVER_CHARACTERISTIC_WRITE_REQUEST"
+}
+
+constants {
+  name: "GATT_SERVER_DESCRIPTOR_READ_REQUEST"
+  string_value: "GATT_SERVER_DESCRIPTOR_READ_REQUEST"
+}
+
+constants {
+  name: "GATT_SERVER_DESCRIPTOR_WRITE_REQUEST"
+  string_value: "GATT_SERVER_DESCRIPTOR_WRITE_REQUEST"
+}
+
+# ===================================== #
+# BluetoothLeBroadcastAssistantSnippet  #
+# ===================================== #
+
+constants {
+  name: "BASS_SOURCE_FOUND"
+  string_value: "BASS_SOURCE_FOUND"
+}
+
+constants {
+  name: "BASS_RECEIVE_STATE_CHANGED"
+  string_value: "BASS_RECEIVE_STATE_CHANGED"
+}
+
+# ===================================== #
+# BluetoothLeBroadcastSnippet           #
+# ===================================== #
+
+constants {
+  name: "LEA_BROADCAST_FIELD_SUBGROUPS"
+  string_value: "subgroups"
+}
+
+constants {
+  name: "LEA_BROADCAST_FIELD_PROGRAM"
+  string_value: "program"
+}
+
+constants {
+  name: "LEA_BROADCAST_FIELD_LANGUAGE"
+  string_value: "language"
+}
+
+constants {
+  name: "LEA_BROADCAST_FIELD_PUBLIC"
+  string_value: "public"
+}
+
+constants {
+  name: "LEA_BROADCAST_FIELD_QUALITY"
+  string_value: "quality"
+}
+
+# ===================== #
+# BluetoothHfpAgSnippet #
+# ===================== #
+
+constants {
+  name: "HFP_AG_AUDIO_STATE_CHANGED"
+  string_value: "HFP_AG_AUDIO_STATE_CHANGED"
+}
+
+# ===================== #
+# BluetoothHfpHfSnippet #
+# ===================== #
+
+constants {
+  name: "HFP_HF_AUDIO_STATE_CHANGED"
+  string_value: "HFP_HF_AUDIO_STATE_CHANGED"
+}
+
+# ===================== #
+# BluetoothA2dpSnippet  #
+# ===================== #
+
+constants {
+  name: "A2DP_PLAYING_STATE_CHANGED"
+  string_value: "A2DP_PLAYING_STATE_CHANGED"
+}
+
+# ======================== #
+# BluetoothLeAudioSnippet  #
+# ======================== #
+
+# ===================== #
+# AudioSnippet          #
+# ===================== #
+
+constants {
+  name: "VOLUME_CHANGED"
+  string_value: "VOLUME_CHANGED"
+}
+
+constants {
+  name: "AUDIO_DEVICE_ADDED"
+  string_value: "AUDIO_DEVICE_ADDED"
+}
+
+constants {
+  name: "AUDIO_DEVICE_REMOVED"
+  string_value: "AUDIO_DEVICE_REMOVED"
+}
+
+constants {
+  name: "PLAYER_IS_PLAYING_CHANGED"
+  string_value: "PLAYER_IS_PLAYING_CHANGED"
+}
+
+constants {
+  name: "PLAYER_MEDIA_ITEM_TRANSITION"
+  string_value: "PLAYER_MEDIA_ITEM_TRANSITION"
+}
+
+constants {
+  name: "AUDIO_COMMUNICATION_DEVICE_CHANGED"
+  string_value: "AUDIO_COMMUNICATION_DEVICE_CHANGED"
+}
+
+constants {
+  name: "CONTENT_TYPE"
+  string_value: "CONTENT_TYPE"
+}
+
+constants: {
+  name: "FLAGS"
+  string_value: "flags"
+}
+
+constants: {
+  name: "USAGE"
+  string_value: "usage"
+}
+
+constants: {
+  name: "URI"
+  string_value: "uri"
+}
+
+constants: {
+  name: "ALLOWED_CAPTURE_POLICY"
+  string_value: "allowed_capture_policy"
+}
+
+constants: {
+  name: "SPATIALIZATION_BEHAVIOR"
+  string_value: "spatialization_behavior"
+}
+
+# ===================== #
+# TelecomSnippet        #
+# ===================== #
+
+constants {
+  name: "CONTACT_NAME"
+  string_value: "name"
+}
+
+constants {
+  name: "CONTACT_NUMBER"
+  string_value: "number"
+}
+
+constants {
+  name: "CONTACT_PHONE_TYPE"
+  string_value: "phone_type"
+}
+
+constants {
+  name: "CONTACT_EMAIL"
+  string_value: "email"
+}
+
+constants {
+  name: "CONTACT_EMAIL_TYPE"
+  string_value: "email_type"
+}
+
+constants {
+  name: "CONTACT_COMPANY"
+  string_value: "company"
+}
+
+constants {
+  name: "CONTACT_JOB_TITLE"
+  string_value: "job_title"
+}
+
+constants {
+  name: "CALL_DATE"
+  string_value: "date"
+}
+
+constants {
+  name: "CALL_DURATION"
+  string_value: "duration"
+}
+
+constants {
+  name: "CALL_TYPE"
+  string_value: "call_type"
+}
+
+constants {
+  name: "CALL_STATE_CHANGED"
+  string_value: "CALL_STATE_CHANGED"
+}
+
+# ===================== #
+# InputSnippet          #
+# ===================== #
+
+constants {
+  name: "KEY_EVENT"
+  string_value: "KEY_EVENT"
+}
+
+constants {
+  name: "MOTION_EVENT"
+  string_value: "MOTION_EVENT"
+}
+
+constants {
+  name: "KEY_EVENT_FIELD_KEY_CODE"
+  string_value: "key_code"
+}
+
+constants {
+  name: "KEY_EVENT_FIELD_ACTION"
+  string_value: "action"
+}
+
+constants {
+  name: "MOTION_EVENT_FIELD_X"
+  string_value: "x"
+}
+
+constants {
+  name: "MOTION_EVENT_FIELD_Y"
+  string_value: "y"
+}
+
+constants {
+  name: "MOTION_EVENT_FIELD_BUTTON_STATE"
+  string_value: "button_state"
+}
+
+# ============================ #
+# DistanceMeasurementSnippet   #
+# ============================ #
+
+constants {
+  name: "DISTANCE_MEASUREMENT_RESULT"
+  string_value: "DISTANCE_MEASUREMENT_RESULT"
+}
+
+constants {
+  name: "RESULT_METERS"
+  string_value: "result_meters"
+}
+
+constants {
+  name: "ERROR_METERS"
+  string_value: "error_meters"
+}
+
+constants {
+  name: "AZIMUTH_ANGLE"
+  string_value: "azimuth_angle"
+}
+
+constants {
+  name: "ERROR_AZIMUTH_ANGLE"
+  string_value: "error_azimuth_angle"
+}
+
+constants {
+  name: "ALTITUDE_ANGLE"
+  string_value: "altitude_angle"
+}
+
+constants {
+  name: "ERROR_ALTITUDE_ANGLE"
+  string_value: "error_altitude_angle"
+}
+
+constants {
+  name: "DELAY_SPREAD_METERS"
+  string_value: "delay_spread_meters"
+}
+
+constants {
+  name: "CONFIDENCE_LEVEL"
+  string_value: "confidence_level"
+}
+
+constants {
+  name: "DETECTED_ATTACK_LEVEL"
+  string_value: "detected_attack_level"
+}
+
+constants {
+  name: "VELOCITY_METERS_PER_SECOND"
+  string_value: "velocity_meters_per_second"
+}
+
+constants {
+  name: "MEASUREMENT_TIMESTAMP_NANOS"
+  string_value: "measurement_timestamp_nanos"
+}
+
+constants {
+  name: "DURATION"
+  string_value: "duration"
+}
+
+constants {
+  name: "METHOD_ID"
+  string_value: "method_id"
+}
+
+constants {
+  name: "FREQUENCY"
+  string_value: "frequency"
+}
+
+constants {
+  name: "CHANNEL_SOUNDING_PARAMS"
+  string_value: "channel_sounding_params"
+}
+
+constants {
+  name: "SIGHT_TYPE"
+  string_value: "sight_type"
+}
+
+constants {
+  name: "LOCATION_TYPE"
+  string_value: "location_type"
+}
+
+constants {
+  name: "SECURITY_LEVEL"
+  string_value: "security_level"
+}

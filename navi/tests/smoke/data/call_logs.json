@@ -1,0 +1,23 @@
+[
+  {
+    "number": "+81-3-1234-5678",
+    "name": "John Smith",
+    "date": 1727273204595,
+    "duration": 10000,
+    "call_type": 1
+  },
+  {
+    "number": "+81-3-1234-5678",
+    "name": "鈴木 花子",
+    "date": 1727273204595,
+    "duration": 10000,
+    "call_type": 2
+  },
+  {
+    "number": "+49-30-12345678",
+    "name": "محمد علي",
+    "date": 1727273204595,
+    "duration": 0,
+    "call_type": 3
+  }
+]

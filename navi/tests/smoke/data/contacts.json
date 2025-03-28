@@ -1,0 +1,164 @@
+[
+  {
+    "number": "+1-555-123-4567",
+    "name": "John Doe",
+    "phone_type": 2,
+    "email": "john.doe@example.com",
+    "email_type": 2,
+    "company": "Acme Corporation",
+    "job_title": "Software Engineer"
+  },
+  {
+    "number": "+81-3-1234-5678",
+    "name": "鈴木 花子",
+    "phone_type": 1,
+    "email": "hana.suzuki@example.co.jp",
+    "email_type": 1,
+    "company": "株式会社 例",
+    "job_title": "営業部長"
+  },
+  {
+    "number": "+49-30-12345678",
+    "name": "Johannes Schmidt",
+    "phone_type": 3,
+    "email": "johannes.schmidt@example.de",
+    "email_type": 2,
+    "company": "Beispiel GmbH",
+    "job_title": "Softwareentwickler"
+  },
+  {
+    "number": "+33-1-23-45-67-89",
+    "name": "Pierre Dupont",
+    "phone_type": 2,
+    "email": "pierre.dupont@example.fr",
+    "email_type": 1,
+    "company": "Société Exemple",
+    "job_title": "Ingénieur Logiciel"
+  },
+  {
+    "number": "+86-10-1234-5678",
+    "name": "张伟",
+    "phone_type": 3,
+    "email": "zhang.wei@example.cn",
+    "email_type": 2,
+    "company": "示例公司",
+    "job_title": "软件工程师"
+  },
+  {
+    "number": "+34-91-123-45-67",
+    "name": "María García",
+    "phone_type": 1,
+    "email": "maria.garcia@example.es",
+    "email_type": 1,
+    "company": "Ejemplo S.A.",
+    "job_title": "Ingeniera de Software"
+  },
+  {
+    "number": "+55-11-1234-5678",
+    "name": "Otávio Oliveira Magalhães",
+    "phone_type": 2,
+    "email": "otavio.magalhaes@example.com.br",
+    "email_type": 2,
+    "company": "Exemplo Ltda.",
+    "job_title": "Engenheiro de Software"
+  },
+  {
+    "number": "+7-495-123-45-67",
+    "name": "Иван Иванов",
+    "phone_type": 3,
+    "email": "ivan.ivanov@example.ru",
+    "email_type": 2,
+    "company": "ООО \"Пример\"",
+    "job_title": "Программист"
+  },
+  {
+    "number": "+91-22-1234-5678",
+    "name": "Rahul Kumar",
+    "phone_type": 2,
+    "email": "rahul.kumar@example.in",
+    "email_type": 1,
+    "company": "Example Pvt. Ltd.",
+    "job_title": "Software Engineer"
+  },
+  {
+    "number": "+39-06-1234-5678",
+    "name": "Marco Rossi",
+    "phone_type": 1,
+    "email": "marco.rossi@example.it",
+    "email_type": 1,
+    "company": "Esempio S.p.A.",
+    "job_title": "Ingegnere del Software"
+  },
+  {
+    "number": "+82-2-1234-5678",
+    "name": "김철수",
+    "phone_type": 3,
+    "email": "cheolsu.kim@example.co.kr",
+    "email_type": 2,
+    "company": "예제 주식회사",
+    "job_title": "소프트웨어 엔지니어"
+  },
+  {
+    "number": "+971-4-123-4567",
+    "name": "محمد علي",
+    "phone_type": 2,
+    "email": "mohammed.ali@example.ae",
+    "email_type": 1,
+    "company": "شركة مثال",
+    "job_title": "مهندس برمجيات"
+  },
+  {
+    "number": "+20-2-1234-5678",
+    "name": "محمد أحمد",
+    "phone_type": 1,
+    "email": "mohamed.ahmed@example.eg",
+    "email_type": 1,
+    "company": "مثال شركة",
+    "job_title": "مهندس برمجيات"
+  },
+  {
+    "number": "+54-11-1234-5678",
+    "name": "Juan Pérez",
+    "phone_type": 3,
+    "email": "juan.perez@example.com.ar",
+    "email_type": 2,
+    "company": "Ejemplo S.A.",
+    "job_title": "Ingeniero de Software"
+  },
+  {
+    "number": "+44-20-1234-5678",
+    "name": "David Smith",
+    "phone_type": 2,
+    "email": "david.smith@example.co.uk",
+    "email_type": 1,
+    "company": "Example Ltd.",
+    "job_title": "Software Engineer"
+  },
+  {
+    "number": "+61-2-1234-5678",
+    "name": "John Smith",
+    "phone_type": 1,
+    "email": "john.smith@example.com.au",
+    "email_type": 1,
+    "company": "Example Pty Ltd.",
+    "job_title": "Software Engineer"
+  },
+  {
+    "number": "+351-21-123-45-67",
+    "name": "João Silva",
+    "phone_type": 3,
+    "email": "joao.silva@example.pt",
+    "email_type": 2,
+    "company": "Exemplo Lda.",
+    "job_title": "Engenheiro de Software"
+  },
+  {
+    "number": "+47-22-12-34-56",
+    "name": "Ola Nordmann",
+    "phone_type": 2,
+    "email": "ola.nordmann@example.no",
+    "email_type": 1,
+    "company": "Eksempel AS",
+    "job_title": "Programvareutvikler"
+  }
+]
