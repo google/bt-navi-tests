@@ -700,6 +700,17 @@ class AndroidBumbleTestBase(BaseTestBase):
         ),
     )
 
+    # Record suite name and manufacturer/model data to suite-level properties.
+    manufacturer = self.dut.getprop('ro.product.manufacturer')
+    self.record_data(
+        RecordData(
+            properties={
+                "suite_name": "NaviTest",
+                "run_identifier": f"[{manufacturer}-{self.dut.device.model}]"
+            }
+        )
+    )
+
     # Record firmware and prebuilt version to sponge properties.
     self.record_data(
         RecordData(
