@@ -1,9 +1,10 @@
 [build-system]
-requires = ["setuptools>=61.0.0"]
-build-backend = "setuptools.build_meta"
+requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
 
 [project]
 name = "navi"
+description = "Android Bluetooth Navi Testing Suite"
 version = "0.1.0"
 authors = [
     { name = "Google", email = "pixel-bluetooth-testing-dev@google.com" },
@@ -16,7 +17,6 @@ dependencies = [
     "pydub",
     "absl-py",
     "snippet-uiautomator",
-    "setuptools>=61.0.0",
     "numpy",
     "mobly-android-partner-tools >= 1.1.1",
     "audioop-lts; python_version >= '3.13'",
@@ -36,12 +36,6 @@ navi_venti = "navi.tests.main:run_venti"
 navi_smoke = "navi.tests.main:run_smoke"
 navi_firmware = "navi.tests.main:run_firmware"
 navi_all = "navi.tests.main:run_all"
-
-[tool.setuptools]
-packages = ["navi"]
-
-[tool.setuptools.package-data]
-"*" = ["*.pyi", "py.typed", "*.json", "*.mp3", "android_hci_proxy_*", "*.apk"]
 
 [tool.mypy]
 follow_untyped_imports = true
