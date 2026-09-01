@@ -20,10 +20,12 @@ jobs:
       fail-fast: false
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      with:
+        persist-credentials: false
 
     - name: Install uv and set the python version
-      uses: astral-sh/setup-uv@v6
+      uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
       with:
         version: "0.8.0"
         python-version: ${{ matrix.python-version }}
@@ -33,8 +35,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        uv pip install --upgrade pip
-        uv pip install ".[dev,doc]"
+        uv sync --all-groups
 
     # On Windows, there are a lot of issues related to UTF-8
     - name: Set environment variables
