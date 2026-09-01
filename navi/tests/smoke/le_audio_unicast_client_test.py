@@ -22,6 +22,7 @@ import struct
 import sys
 import tempfile
 from typing import TypeAlias
+from unittest import mock
 import wave
 
 from bumble import core
@@ -64,6 +65,10 @@ _CALLER_NUMBER = "123456789"
 _SINK_ASE_ID = 1
 _SOURCE_ASE_ID = 2
 _DEFAULT_FRAME_RATE = 48000
+_MOCK_CONNECTION_SERVICE_CLASS = (
+    f"{android_constants.PACKAGE_NAME_BLUETOOTH_SNIPPET}.MockConnectionService"
+)
+_MOCK_CONNECTION_SERVICE_ID = "mock_connection_service"
 _RECORDING_PATH = "/storage/self/primary/Recordings/record.wav"
 _GENERAL_DISCOVERABLE_AD_FLAGS = data_types.Flags(
     core.AdvertisingData.Flags.LE_GENERAL_DISCOVERABLE_MODE
@@ -162,6 +167,35 @@ class LeAudioUnicastClientTest(navi_test_base.TwoDevicesTestBase):
         wave_file.writeframes(bytes(48000 * 2 * duration_seconds))
       self.dut.adb.push([local_file.name, path_on_device])
 
+  def _setup_mock_connection_service(self) -> None:
+    phone_account_handle = (
+        android_constants.PACKAGE_NAME_BLUETOOTH_SNIPPET,
+        _MOCK_CONNECTION_SERVICE_CLASS,
+        _MOCK_CONNECTION_SERVICE_ID,
+    )
+    self.logger.info("[DUT] Register mock phone account.")
+    self.dut.bt.registerPhoneAccount(
+        *phone_account_handle, "Mock Connection Service"
+    )
+
+    self.logger.info("[DUT] Enable and set mock phone account as default.")
+    self.dut.bt.setPhoneAccountEnabled(
+        *phone_account_handle,
+        True,
+    )
+    self.dut.bt.setUserSelectedOutgoingPhoneAccount(*phone_account_handle)
+
+    def cleanup() -> None:
+      self.logger.info("[DUT] Clean up mock phone account.")
+      self.dut.bt.setUserSelectedOutgoingPhoneAccount()
+      self.dut.bt.setPhoneAccountEnabled(
+          *phone_account_handle,
+          False,
+      )
+      self.dut.bt.unregisterPhoneAccount(*phone_account_handle)
+
+    self.test_case_context.callback(cleanup)
+
   async def _prepare_paired_devices(self) -> None:
     with self.dut.bl4a.register_callback(
         bl4a_api.Module.LE_AUDIO
@@ -220,6 +254,8 @@ class LeAudioUnicastClientTest(navi_test_base.TwoDevicesTestBase):
 
   @override
   async def async_teardown_test(self) -> None:
+    self.logger.info("[DUT] Disconnect all calls.")
+    self.dut.bt.disconnectAllCalls()
     # Make sure audio is stopped before starting the test.
     await asyncio.to_thread(self.dut.bt.audioStop)
     # Reset to the default value.
@@ -381,13 +417,26 @@ class LeAudioUnicastClientTest(navi_test_base.TwoDevicesTestBase):
     """Tests streaming with gaming context.
 
     Test steps:
-      1. [Optional] Wait for audio streaming to stop if it is already streaming.
-      2. Start audio streaming from DUT with gaming context and put a call on
+      1. Wait for BLE_HEADSET input audio device.
+      2. [Optional] Wait for audio streaming to stop if it is already streaming.
+      3. Start audio streaming from DUT with gaming context and put a call on
       DUT.
-      3. Wait for audio streaming to start from REF.
-      4. Stop audio streaming from DUT and end the call.
-      5. Wait for audio streaming to stop from REF.
+      4. Wait for audio streaming to start from REF.
+      5. Stop audio streaming from DUT and end the call.
+      6. Wait for audio streaming to stop from REF.
     """
+    # Make sure input audio device is ready for recording.
+    with self.dut.bl4a.register_callback(bl4a_api.Module.AUDIO) as dut_audio_cb:
+      self.logger.info("[DUT] Wait for BLE_HEADSET input audio device")
+      await dut_audio_cb.wait_for_event(
+          bl4a_api.AudioDeviceAdded(
+              device_type=android_constants.AudioDeviceType.BLE_HEADSET,
+              address=self.ref.random_address,
+              is_source=True,
+              is_sink=False,
+          )
+      )
+
     sink_ase = self.ref_ascs.ase_state_machines[_SINK_ASE_ID]
     source_ase = self.ref_ascs.ase_state_machines[_SOURCE_ASE_ID]
     condition = asyncio.Condition()
@@ -503,6 +552,16 @@ class LeAudioUnicastClientTest(navi_test_base.TwoDevicesTestBase):
       5. Stop audio streaming from DUT.
       6. Wait for audio streaming to stop from REF.
     """
+    # Make sure audio is not streaming.
+    async with self.assert_not_timeout(
+        _DEFAULT_STEP_TIMEOUT_SECONDS,
+        msg="[REF] Wait for audio to stop",
+    ):
+      for ase in self.ref_ascs.ase_state_machines.values():
+        await _wait_for_ase_state(
+            ase, ascs.AudioStreamEndpointCharacteristic.State.IDLE
+        )
+
     dut_telecom_cb = self.dut.bl4a.register_callback(bl4a_api.Module.TELECOM)
     self.test_case_context.push(dut_telecom_cb)
     call = self.dut.bl4a.make_phone_call(
@@ -526,26 +585,8 @@ class LeAudioUnicastClientTest(navi_test_base.TwoDevicesTestBase):
           lambda e: (e.state in (_CallState.CONNECTING, _CallState.DIALING)),
       )
 
-      # Make sure audio is not streaming.
-      async with self.assert_not_timeout(
-          _DEFAULT_STEP_TIMEOUT_SECONDS,
-          msg="[REF] Wait for audio to stop",
-      ):
-        for ase in self.ref_ascs.ase_state_machines.values():
-          await _wait_for_ase_state(
-              ase, ascs.AudioStreamEndpointCharacteristic.State.IDLE
-          )
-
       self.logger.info("[DUT] Start audio streaming")
       await asyncio.to_thread(self.dut.bt.audioPlaySine)
-      async with self.assert_not_timeout(
-          _DEFAULT_STEP_TIMEOUT_SECONDS,
-          msg="[REF] Wait for sink ASE to start",
-      ):
-        await _wait_for_ase_state(
-            sink_ase, ascs.AudioStreamEndpointCharacteristic.State.STREAMING
-        )
-
       self.logger.info("[DUT] Start audio recording")
       recorder = await self.dut.bl4a.start_audio_recording(
           _RECORDING_PATH,
@@ -554,11 +595,12 @@ class LeAudioUnicastClientTest(navi_test_base.TwoDevicesTestBase):
       self.test_case_context.push(recorder)
       async with self.assert_not_timeout(
           _DEFAULT_STEP_TIMEOUT_SECONDS,
-          msg="[REF] Wait for source ASE to start",
+          msg="[REF] Wait for audio to start",
       ):
-        await _wait_for_ase_state(
-            source_ase, ascs.AudioStreamEndpointCharacteristic.State.STREAMING
-        )
+        for ase in (sink_ase, source_ase):
+          await _wait_for_ase_state(
+              ase, ascs.AudioStreamEndpointCharacteristic.State.STREAMING
+          )
 
       # Setup audio sink.
       sink_frames = list[bytes]()
@@ -707,6 +749,7 @@ class LeAudioUnicastClientTest(navi_test_base.TwoDevicesTestBase):
       )
 
     self.logger.info("[DUT] Start audio streaming")
+    self.dut.bt.audioSetRepeat(android_constants.RepeatMode.ONE)
     await asyncio.to_thread(self.dut.bt.audioPlaySine)
     async with self.assert_not_timeout(
         _DEFAULT_STEP_TIMEOUT_SECONDS,
@@ -733,6 +776,13 @@ class LeAudioUnicastClientTest(navi_test_base.TwoDevicesTestBase):
         constants.Direction.OUTGOING,
     )
     with call:
+      self.dut.bl4a.set_audio_attributes(
+          bl4a_api.AudioAttributes(
+              usage=bl4a_api.AudioAttributes.Usage.VOICE_COMMUNICATION,
+              content_type=bl4a_api.AudioAttributes.ContentType.SPEECH,
+          ),
+          handle_audio_focus=False,
+      )
       async with self.assert_not_timeout(
           _DEFAULT_STEP_TIMEOUT_SECONDS,
           msg="[DUT] Wait for ASE to be released",
@@ -921,7 +971,9 @@ class LeAudioUnicastClientTest(navi_test_base.TwoDevicesTestBase):
         self.fail("Failed to connect MCP")
 
     # Allow repeating to avoid the end of the track.
-    self.dut.bt.audioSetRepeat(android_constants.RepeatMode.ONE)
+    await asyncio.to_thread(
+        self.dut.bt.audioSetRepeat, android_constants.RepeatMode.ONE
+    )
 
     dut_player_cb = self.dut.bl4a.register_callback(bl4a_api.Module.PLAYER)
     self.test_case_context.push(dut_player_cb)
@@ -935,10 +987,10 @@ class LeAudioUnicastClientTest(navi_test_base.TwoDevicesTestBase):
     media_item_2 = bl4a_api.MediaItem(id="2", uri=app_uri)
 
     self.logger.info("[DUT] Set media item to 1.")
-    self.dut.bl4a.play_media_item(media_item_1)
+    await asyncio.to_thread(self.dut.bl4a.play_media_item, media_item_1)
 
     self.logger.info("[DUT] Add media item of 2.")
-    self.dut.bl4a.add_media_item(media_item_2)
+    await asyncio.to_thread(self.dut.bl4a.add_media_item, media_item_2)
 
     self.logger.info("[DUT] Wait for playback started.")
     await dut_player_cb.wait_for_event(
@@ -1233,6 +1285,57 @@ class LeAudioUnicastClientTest(navi_test_base.TwoDevicesTestBase):
           event=bl4a_api.CallStateChanged,
           predicate=lambda e: (e.state == _CallState.DISCONNECTED),
       )
+
+  async def test_ccp_dial_outgoing_call_from_ref(self) -> None:
+    """Tests outgoing dial from REF over CCP (originate).
+
+    Test steps:
+      1. Set default dialer to snippet on DUT.
+      2. Enable and configure mock connection service on DUT.
+      3. Connect TBS on REF.
+      4. Register Telecom callback on DUT.
+      5. Dial phone number from REF using CCP originate.
+      6. Verify call dialing event on DUT.
+    """
+    if not self.dut_ccp_enabled:
+      self.skipTest("CCP is not enabled on DUT")
+
+    self._setup_mock_connection_service()
+
+    self.logger.info("[REF] Connect TBS")
+    ref_dut_acl = next(iter(self.ref.device.connections.values()))
+    async with device.Peer(ref_dut_acl) as peer:
+      ref_tbs_client = peer.create_service_proxy(
+          ccp.GenericTelephoneBearerServiceProxy
+      )
+      if not ref_tbs_client:
+        self.fail("Failed to connect TBS")
+
+    async with self.assert_not_timeout(
+        _DEFAULT_STEP_TIMEOUT_SECONDS,
+        msg="[REF] Read and subscribe TBS characteristics",
+    ):
+      await ref_tbs_client.read_and_subscribe_characteristics()
+
+    dut_telecom_cb = self.dut.bl4a.register_callback(bl4a_api.Module.TELECOM)
+    self.test_case_context.push(dut_telecom_cb)
+
+    dial_uri = f"tel:{_CALLER_NUMBER}"
+    self.logger.info("[REF] Dial %s", dial_uri)
+    dial_task = asyncio.create_task(ref_tbs_client.originate(dial_uri))
+
+    self.logger.info("[DUT] Wait for call dialing event.")
+    await dut_telecom_cb.wait_for_event(
+        bl4a_api.CallStateChanged(
+            handle=dial_uri,
+            state=android_constants.CallState.DIALING,
+            name=mock.ANY,
+        ),
+    )
+
+    async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+      self.logger.info("[REF] Wait for dial task to complete.")
+      await dial_task
 
   async def test_noisy_handling(self) -> None:
     """Tests enabling noisy handling, and verify the player is paused after REF disconnected.

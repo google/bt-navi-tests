@@ -400,7 +400,7 @@ class LeConnectionlessTest(test_base.DualDeviceTestBase):
                 found_name,
             )
             if found_name is not None:
-              found_address_by_name[found_name] = advertisement.address  # pytype: disable=container-type-mismatch
+              found_address_by_name[found_name] = advertisement.address
     finally:
       self.logger.info("Stopping scanning")
       await scanner.stop_scanning()
@@ -798,6 +798,351 @@ class LeConnectionlessTest(test_base.DualDeviceTestBase):
           break
 
   @navi_test_base.named_parameterized(
+      service_data_legacy=dict(
+          filter_type=apcf.ApcfFeatureSelection.SERVICE_DATA, is_legacy=True
+      ),
+      service_data_extended=dict(
+          filter_type=apcf.ApcfFeatureSelection.SERVICE_DATA, is_legacy=False
+      ),
+      service_uuid_legacy=dict(
+          filter_type=apcf.ApcfFeatureSelection.SERVICE_UUID, is_legacy=True
+      ),
+      service_uuid_extended=dict(
+          filter_type=apcf.ApcfFeatureSelection.SERVICE_UUID, is_legacy=False
+      ),
+      name_legacy=dict(
+          filter_type=apcf.ApcfFeatureSelection.LOCAL_NAME, is_legacy=True
+      ),
+      name_extended=dict(
+          filter_type=apcf.ApcfFeatureSelection.LOCAL_NAME, is_legacy=False
+      ),
+      address_legacy=dict(
+          filter_type=apcf.ApcfFeatureSelection.BROADCAST_ADDRESS,
+          is_legacy=True,
+      ),
+      address_extended=dict(
+          filter_type=apcf.ApcfFeatureSelection.BROADCAST_ADDRESS,
+          is_legacy=False,
+      ),
+  )
+  async def test_le_apcf_add_filter_while_scanning(
+      self, filter_type: apcf.ApcfFeatureSelection, is_legacy: bool
+  ) -> None:
+    """Tests adding APCF filter while scanning is active."""
+    if self.is_emulator:
+      self.skipTest("Rootcanal doesn't support APCF filtering.")
+
+    # We use DUT as scanner and REF as advertiser
+    scanner = self.dut.device
+    advertiser = self.ref.device
+
+    if is_legacy:
+      advertising_event_properties = device_lib.AdvertisingEventProperties(
+          is_connectable=True,
+          is_scannable=True,
+          is_legacy=True,
+      )
+    else:
+      advertising_event_properties = device_lib.AdvertisingEventProperties(
+          is_connectable=True,
+          is_scannable=False,  # Extended connectable cannot be scannable
+          is_legacy=False,
+      )
+
+    # 1. Check if APCF is supported by scanner
+    try:
+      self.logger.info("[Scanner] Check if APCF is supported")
+      await scanner.send_sync_command(apcf.HciApcfReadExtendedFeaturesCommand())
+    except hci.HCI_Error as e:
+      if e.error_code == hci.HCI_ErrorCode.UNKNOWN_HCI_COMMAND_ERROR:
+        self.skipTest("Scanner does not support APCF")
+      raise
+
+    # Generate dynamic names to avoid collision
+    token = secrets.token_hex(4)
+
+    filter_1_command: apcf.HciApcfCommand
+    filter_2_command: apcf.HciApcfCommand
+    # Define match and mismatch parameters based on filter_type
+    if filter_type == apcf.ApcfFeatureSelection.LOCAL_NAME:
+      match_name = f"APCF-Match-{token}"
+      mismatch_name = f"APCF-Mismatch-{token}"
+      placeholder_name = f"APCF-Placeholder-{token}"
+
+      adv_data_match = bytes(
+          core.AdvertisingData([data_types.CompleteLocalName(match_name)])
+      )
+      adv_data_mismatch = bytes(
+          core.AdvertisingData([data_types.CompleteLocalName(mismatch_name)])
+      )
+
+      filter_1_command = apcf.HciApcfLocalNameCommand(
+          apcf_action=apcf.ApcfAction.ADD,
+          apcf_filter_index=1,
+          local_name=placeholder_name.encode("utf-8"),
+      )
+      filter_2_command = apcf.HciApcfLocalNameCommand(
+          apcf_action=apcf.ApcfAction.ADD,
+          apcf_filter_index=2,
+          local_name=match_name.encode("utf-8"),
+      )
+
+      adv_address_match = None
+      adv_address_mismatch = None
+
+    elif filter_type == apcf.ApcfFeatureSelection.BROADCAST_ADDRESS:
+      match_address = hci.Address.generate_static_address()
+      mismatch_address = hci.Address.generate_static_address()
+      placeholder_address = hci.Address.generate_static_address()
+
+      adv_name = f"APCF-Addr-{token}"
+      adv_data_match = bytes(
+          core.AdvertisingData([data_types.CompleteLocalName(adv_name)])
+      )
+      adv_data_mismatch = adv_data_match
+
+      filter_1_command = apcf.HciApcfBroadcasterAddressCommand(
+          apcf_action=apcf.ApcfAction.ADD,
+          apcf_filter_index=1,
+          broadcaster_address=bytes(placeholder_address),
+          application_address_type=0x02,  # Ignore address type
+      )
+      filter_2_command = apcf.HciApcfBroadcasterAddressCommand(
+          apcf_action=apcf.ApcfAction.ADD,
+          apcf_filter_index=2,
+          broadcaster_address=bytes(match_address),
+          application_address_type=0x02,  # Ignore address type
+      )
+
+      adv_address_match = match_address
+      adv_address_mismatch = mismatch_address
+
+    elif filter_type == apcf.ApcfFeatureSelection.SERVICE_UUID:
+      match_uuid = core.UUID("180D")  # Heart Rate
+      mismatch_uuid = core.UUID("180F")  # Battery Service
+      placeholder_uuid = core.UUID("180A")  # Device Information
+
+      adv_name = f"APCF-UUID-{token}"
+      adv_data_match = bytes(
+          core.AdvertisingData([
+              data_types.CompleteLocalName(adv_name),
+              data_types.IncompleteListOf16BitServiceUUIDs([match_uuid]),
+          ])
+      )
+      adv_data_mismatch = bytes(
+          core.AdvertisingData([
+              data_types.CompleteLocalName(adv_name),
+              data_types.IncompleteListOf16BitServiceUUIDs([mismatch_uuid]),
+          ])
+      )
+
+      uuid_bytes_placeholder = placeholder_uuid.to_bytes()
+      uuid_bytes_match = match_uuid.to_bytes()
+      mask_bytes = b"\xFF\xFF"
+      filter_1_command = apcf.HciApcfServiceUuidCommand(
+          apcf_action=apcf.ApcfAction.ADD,
+          apcf_filter_index=1,
+          uuid_and_mask=uuid_bytes_placeholder + mask_bytes,
+      )
+      filter_2_command = apcf.HciApcfServiceUuidCommand(
+          apcf_action=apcf.ApcfAction.ADD,
+          apcf_filter_index=2,
+          uuid_and_mask=uuid_bytes_match + mask_bytes,
+      )
+
+      adv_address_match = None
+      adv_address_mismatch = None
+
+    elif filter_type == apcf.ApcfFeatureSelection.SERVICE_DATA:
+      sd_uuid = core.UUID("180D")
+      match_data = b"\x01\x02"
+      mismatch_data = b"\x03\x04"
+      placeholder_data = b"\x05\x06"
+
+      adv_name = f"APCF-SD-{token}"
+      adv_data_match = bytes(
+          core.AdvertisingData([
+              data_types.CompleteLocalName(adv_name),
+              data_types.ServiceData16BitUUID(sd_uuid, match_data),
+          ])
+      )
+      adv_data_mismatch = bytes(
+          core.AdvertisingData([
+              data_types.CompleteLocalName(adv_name),
+              data_types.ServiceData16BitUUID(sd_uuid, mismatch_data),
+          ])
+      )
+
+      placeholder_bytes = sd_uuid.to_bytes() + placeholder_data
+      match_bytes = sd_uuid.to_bytes() + match_data
+      mask_bytes = b"\xFF\xFF\xFF\xFF"
+
+      filter_1_command = apcf.HciApcfServiceDataCommand(
+          apcf_action=apcf.ApcfAction.ADD,
+          apcf_filter_index=1,
+          service_data_and_mask=placeholder_bytes + mask_bytes,
+      )
+      filter_2_command = apcf.HciApcfServiceDataCommand(
+          apcf_action=apcf.ApcfAction.ADD,
+          apcf_filter_index=2,
+          service_data_and_mask=match_bytes + mask_bytes,
+      )
+
+      adv_address_match = None
+      adv_address_mismatch = None
+    else:
+      raise ValueError(f"Unknown filter_type: {filter_type}")
+
+    # Setup Scanner Queue
+    advertisements = asyncio.Queue[device_lib.Advertisement]()
+    scanner.on(device_lib.Device.EVENT_ADVERTISEMENT, advertisements.put_nowait)
+
+    # 2. Start advertising with mismatch data
+    self.logger.info("Starting advertising with mismatch data")
+    advertising_set = await advertiser.create_advertising_set(
+        random_address=adv_address_mismatch,
+        advertising_parameters=device_lib.AdvertisingParameters(
+            advertising_event_properties=advertising_event_properties,
+            own_address_type=hci.OwnAddressType.RANDOM,
+        ),
+        advertising_data=adv_data_mismatch,
+        auto_restart=True,
+        auto_start=True,
+    )
+
+    # 3. Verify scanner can see the advertisement (without filter)
+    self.logger.info("Starting scanning (no filter)")
+    await scanner.start_scanning()
+    async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
+      while True:
+        advertisement = await advertisements.get()
+        expected_address = (
+            adv_address_mismatch or advertising_set.random_address
+        )
+        if advertisement.address == expected_address:
+          self.logger.info("Found advertisement: %s", advertisement)
+          break
+
+    self.logger.info("Stopping scanning")
+    await scanner.stop_scanning()
+    await advertising_set.stop()
+    await advertising_set.remove()
+
+    # Clear queue
+    while not advertisements.empty():
+      advertisements.get_nowait()
+
+    # 4. Enable APCF on scanner
+    self.logger.info("[Scanner] Enable APCF")
+    await scanner.send_sync_command(
+        apcf.HciApcfEnableCommand(apcf_enable=1),
+    )
+
+    # 5. Set Filtering Parameters
+    self.logger.info(
+        "[Scanner] Set APCF filtering parameters for filter 1 (%r)",
+        filter_type,
+    )
+    await scanner.send_sync_command(
+        apcf.HciApcfSetFilteringParametersCommand(
+            apcf_action=apcf.ApcfAction.ADD,
+            apcf_filter_index=1,
+            apcf_feature_selection=filter_type,
+            apcf_list_logic_type=filter_type,
+            apcf_filter_logic_type=apcf.ApcfFilterLogicType.AND,
+            rssi_high_thresh=-127,  # Low threshold to avoid filtering by RSSI
+            delivery_mode=0x00,  # immediate
+        ),
+    )
+
+    # 6. Set Filter Value
+    self.logger.info("[Scanner] Set APCF filter value for filter 1")
+    await scanner.send_sync_command(filter_1_command)
+
+    # 7. Start advertising with mismatch data again
+    self.logger.info("Starting advertising with mismatch data again")
+    advertising_set = await advertiser.create_advertising_set(
+        random_address=adv_address_mismatch,
+        advertising_parameters=device_lib.AdvertisingParameters(
+            advertising_event_properties=advertising_event_properties,
+            own_address_type=hci.OwnAddressType.RANDOM,
+        ),
+        advertising_data=adv_data_mismatch,
+        auto_restart=True,
+        auto_start=True,
+    )
+
+    # 8. Start scanning, verify scanner does NOT see mismatch data
+    self.logger.info("Starting scanning (with filter)")
+    await scanner.start_scanning()
+    async with self.assert_timeout(_DEFAULT_TIMEOUT_SECONDS):
+      while True:
+        advertisement = await advertisements.get()
+        expected_address = (
+            adv_address_mismatch or advertising_set.random_address
+        )
+        if advertisement.address == expected_address:
+          self.fail(
+              "Should not receive advertisement from"
+              f" {advertisement.address} due to APCF filter"
+          )
+
+    # 9. Add another filter with correct data to match
+    self.logger.info(
+        "[Scanner] Set APCF filtering parameters for filter 2 while scanning"
+        " (%r)",
+        filter_type,
+    )
+    await scanner.send_sync_command(
+        apcf.HciApcfSetFilteringParametersCommand(
+            apcf_action=apcf.ApcfAction.ADD,
+            apcf_filter_index=2,
+            apcf_feature_selection=filter_type,
+            apcf_list_logic_type=filter_type,
+            apcf_filter_logic_type=apcf.ApcfFilterLogicType.AND,
+            rssi_high_thresh=-127,  # Low threshold to avoid filtering by RSSI
+            delivery_mode=0x00,  # immediate
+        ),
+    )
+
+    self.logger.info("[Scanner] Set APCF filter value for filter 2")
+    await scanner.send_sync_command(filter_2_command)
+
+    self.logger.info("Changing advertising to match data")
+    await advertising_set.stop()
+    await advertising_set.remove()
+
+    # Clear queue just in case
+    while not advertisements.empty():
+      advertisements.get_nowait()
+
+    advertising_set = await advertiser.create_advertising_set(
+        random_address=adv_address_match,
+        advertising_parameters=device_lib.AdvertisingParameters(
+            advertising_event_properties=advertising_event_properties,
+            own_address_type=hci.OwnAddressType.RANDOM,
+        ),
+        advertising_data=adv_data_match,
+        auto_restart=True,
+        auto_start=True,
+    )
+
+    # 10. Verify scanner sees match data
+    self.logger.info("Waiting for match advertisement")
+    async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
+      while True:
+        advertisement = await advertisements.get()
+        expected_address = adv_address_match or advertising_set.random_address
+        if advertisement.address == expected_address:
+          self.logger.info("Found matching advertisement: %s", advertisement)
+          break
+
+    self.logger.info("Stopping scanning")
+    await scanner.stop_scanning()
+    await advertising_set.stop()
+    await advertising_set.remove()
+
+  @navi_test_base.named_parameterized(
       legacy=dict(is_legacy=True),
       extended=dict(is_legacy=False),
   )
@@ -940,6 +1285,19 @@ class LeConnectionlessTest(test_base.DualDeviceTestBase):
     # 10. Cleanup scanner
     self.logger.info("[Scanner] Stopping scanning")
     await scanner.stop_scanning()
+
+  async def test_connect_while_scanning(self) -> None:
+    """Verifies connection initiation takes priority over scan reporting."""
+    self.logger.info("[DUT] Starting scanning")
+    await self.dut.device.start_scanning(active=True)
+
+    self.logger.info("[DUT] Starting connection")
+    await self.create_connection(
+        central=self.dut.device,
+        peripheral=self.ref.device,
+        link_type=core.PhysicalTransport.LE,
+        timeout=_DEFAULT_TIMEOUT_SECONDS,
+    )
 
 
 if __name__ == "__main__":

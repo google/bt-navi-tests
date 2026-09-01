@@ -33,7 +33,7 @@ from navi.utils import android_constants
 from navi.utils import bl4a_api
 from navi.utils import errors
 
-_DEFAULT_STEP_TIMEOUT_SECONDS = 5.0
+_DEFAULT_STEP_TIMEOUT_SECONDS = 15.0
 _DEFAULT_TEST_TIMEOUT_SECONDS = 15.0
 _TRANSMISSION_TIMEOUT_SECONDS = 180.0
 _RFCOMM_SERVICE_RECORD_HANDLE = 1

@@ -28,7 +28,6 @@ from typing import Self
 import uuid
 
 from bumble import device as bumble_device
-from bumble import hci
 from bumble import host
 from bumble import snoop
 from bumble import transport
@@ -71,6 +70,8 @@ class CrownDevice:
     random_address: Random identity address of this device.
     snoop_buffer: Buffer for HCI snoop logs. This is cleared when the device is
       opened.
+    reset_delay: Delay in seconds after closing the device before opening it
+      again during a reset.
   """
 
   device: bumble_device.Device
@@ -78,11 +79,13 @@ class CrownDevice:
 
   hci: transport.Transport | None
   adapter: CrownAdapter
+  reset_delay: float
 
   def __init__(
       self,
       adapter: CrownAdapter,
       config: bumble_device.DeviceConfiguration | None = None,
+      reset_delay: float = 0,
   ) -> None:
     self.config = config or bumble_device.DeviceConfiguration(
         classic_enabled=True
@@ -91,6 +94,7 @@ class CrownDevice:
     self.hci = None
     self.adapter = adapter
     self.snoop_buffer = io.BytesIO()
+    self.reset_delay = reset_delay
 
   async def open(self) -> None:
     """Opens this device and its HCI transport."""
@@ -104,10 +108,6 @@ class CrownDevice:
     )
     self.snoop_buffer = io.BytesIO()
     self.device.host.snooper = snoop.BtSnooper(self.snoop_buffer)
-    # Reset.
-    await self.device.host.reset()
-    # Get controller name.
-    await self.device.host.send_command(hci.HCI_Read_Local_Name_Command())
 
     # power-on.
     await self.device.power_on()
@@ -128,6 +128,7 @@ class CrownDevice:
   async def reset(self) -> None:
     """Resets this device."""
     await self.close()
+    await asyncio.sleep(self.reset_delay)
     await self.open()
 
   @property
@@ -144,6 +145,7 @@ class CrownDevice:
       adapter: CrownAdapter,
       config: bumble_device.DeviceConfiguration | None = None,
       start_timeout: float = 10.0,
+      reset_delay: float = 0,
   ) -> Self:
     """Creates a CrownDevice instance with a given adapter.
 
@@ -151,11 +153,12 @@ class CrownDevice:
       adapter: Adapter between Bumble host and Android controller.
       config: Bumble device configuration.
       start_timeout: Timeout for the device to start.
+      reset_delay: Delay in seconds during reset.
 
     Returns:
       A CrownDevice instance.
     """
-    instance = cls(adapter, config)
+    instance = cls(adapter, config, reset_delay)
 
     @retry.retry_on_exception()
     async def inner() -> None:
@@ -261,8 +264,11 @@ class AndroidCrownAdapter(CrownAdapter):
     self.ad.adb.shell(f'chmod +x {_HCI_PROXY_DEVICE_PATH}')
 
     # Kill HCI proxy if it is already running.
-    with contextlib.suppress(adb.Error):
-      self.ad.adb.shell(['killall', '-w', 'hci_proxy'])
+    try:
+      self.ad.adb.shell('killall -w hci_proxy || true', timeout=5.0)
+    except adb.Error:
+      # Unable to kill HCI proxy, so reboot the device.
+      self.ad.reboot()
 
     self._hci_proxy_process = subprocess.Popen(
         [

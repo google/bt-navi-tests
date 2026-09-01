@@ -40,6 +40,9 @@ class OtherSnippet : Snippet {
 
   @Rpc(description = "Get SDK version") fun getSdkVersion(): Int = Build.VERSION.SDK_INT
 
+  @Rpc(description = "Get full SDK version")
+  fun getFullSdkVersion(): Int = Build.VERSION.SDK_INT_FULL
+
   @AsyncRpc(description = "Register Voice Command Callback")
   fun registerVoiceCommandCallback(callbackId: String) {
     val broadcastReceiver =

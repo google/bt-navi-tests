@@ -155,7 +155,11 @@ class HapTest(navi_test_base.MultiDevicesTestBase):
           else [self.refs[0]]
       ):
         self.logger.info("[DUT] Connect to REF-%d", i)
-        await self.le_connect_and_pair(hci.OwnAddressType.RANDOM, ref)
+        await self.le_connect_and_pair(
+            ref_address_type=hci.OwnAddressType.RANDOM,
+            ref=ref,
+            connect_profiles=True,
+        )
         self.dut.bt.setHapConnectionPolicy(
             ref.random_address, android_constants.ConnectionPolicy.ALLOWED
         )

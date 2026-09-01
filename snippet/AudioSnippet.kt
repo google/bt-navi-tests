@@ -29,6 +29,7 @@ import android.media.AudioManager
 import android.media.AudioManager.OnCommunicationDeviceChangedListener
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.Spatializer
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -81,6 +82,8 @@ class AudioSnippet : Snippet {
     Executors.newSingleThreadExecutor().asCoroutineDispatcher()
   private val coroutineScope = CoroutineScope(dispatcher + Job())
   internal val recorders = mutableMapOf<String, Pair<AudioRecord, Deferred<List<Byte>>>>()
+  private val headTrackerListeners =
+    mutableMapOf<String, Spatializer.OnHeadTrackerAvailableListener>()
 
   init {
     instrumentation.uiAutomation.adoptShellPermissionIdentity()
@@ -109,6 +112,8 @@ class AudioSnippet : Snippet {
             postSnippetEvent(callbackId, SnippetConstants.AUDIO_DEVICE_ADDED) {
               putString(SnippetConstants.FIELD_DEVICE, addedDevice.address)
               putInt(SnippetConstants.FIELD_TYPE, addedDevice.type)
+              putBoolean(SnippetConstants.FIELD_IS_SOURCE, addedDevice.isSource)
+              putBoolean(SnippetConstants.FIELD_IS_SINK, addedDevice.isSink)
             }
           }
         }
@@ -118,6 +123,8 @@ class AudioSnippet : Snippet {
             postSnippetEvent(callbackId, SnippetConstants.AUDIO_DEVICE_REMOVED) {
               putString(SnippetConstants.FIELD_DEVICE, removedDevice.address)
               putInt(SnippetConstants.FIELD_TYPE, removedDevice.type)
+              putBoolean(SnippetConstants.FIELD_IS_SOURCE, removedDevice.isSource)
+              putBoolean(SnippetConstants.FIELD_IS_SINK, removedDevice.isSink)
             }
           }
         }
@@ -462,6 +469,7 @@ class AudioSnippet : Snippet {
         throw IllegalArgumentException("Unable to set preferred device $preferredDevice")
       }
     }
+    recorder.startRecording()
     val deferred = coroutineScope.async {
       val outputBuffer = mutableListOf<Byte>()
       val buffer = ByteArray(bufferSize)
@@ -471,7 +479,6 @@ class AudioSnippet : Snippet {
       Log.d(TAG, "Recording ${outputPath} stopped")
       outputBuffer
     }
-    recorder.startRecording()
     recorders[outputPath] = Pair(recorder, deferred)
   }
 
@@ -516,6 +523,8 @@ class AudioSnippet : Snippet {
       Bundle().apply {
         putString(SnippetConstants.FIELD_DEVICE, device.address)
         putInt(SnippetConstants.FIELD_TYPE, device.type)
+        putBoolean(SnippetConstants.FIELD_IS_SOURCE, device.isSource)
+        putBoolean(SnippetConstants.FIELD_IS_SINK, device.isSink)
       }
     }
   }
@@ -577,6 +586,25 @@ class AudioSnippet : Snippet {
   fun getHeadtrackerEnabled(role: Int, type: Int, address: String): Boolean =
     audioManager.spatializer.isHeadTrackerEnabled(AudioDeviceAttributes(role, type, address))
 
+  @AsyncRpc(description = "Registers a HeadTracker availability callback")
+  fun audioRegisterHeadTrackerCallback(callbackId: String) {
+    val listener = Spatializer.OnHeadTrackerAvailableListener { _, available ->
+      Log.d(TAG, "onHeadTrackerAvailableChanged: $available")
+      postSnippetEvent(callbackId, SnippetConstants.HEAD_TRACKER_AVAILABLE_CHANGED) {
+        putBoolean(SnippetConstants.FIELD_STATE, available)
+      }
+    }
+    audioManager.spatializer.addOnHeadTrackerAvailableListener(context.mainExecutor, listener)
+    headTrackerListeners[callbackId] = listener
+  }
+
+  @Rpc(description = "Unregisters a HeadTracker availability callback")
+  fun audioUnregisterHeadTrackerCallback(callbackId: String) {
+    headTrackerListeners.remove(callbackId)?.also { listener ->
+      audioManager.spatializer.removeOnHeadTrackerAvailableListener(listener)
+    }
+  }
+
   @Rpc(description = "Get compatible Spatializer devices")
   fun getCompatibleSpatizlierDevices(): List<String> =
     audioManager.spatializer.compatibleAudioDevices.map { it.address }
@@ -601,9 +629,18 @@ class AudioSnippet : Snippet {
 
   /** Sets the vendor parameters to audio. */
   @Rpc(description = "Set the vendor parameters")
-  fun setParameters(parameters: String) {
+  fun setAudioParameters(parameters: String) {
     audioManager.setParameters(parameters)
   }
+
+  /** Sets the audio mode to audio. */
+  @Rpc(description = "Set the audio mode")
+  fun setAudioMode(mode: Int) {
+    audioManager.mode = mode
+  }
+
+  /** Gets the audio mode. */
+  @Rpc(description = "Get the audio mode") fun getAudioMode(): Int = audioManager.mode
 
   /** Gets the mute state */
   @Rpc(description = "Get the microphone mute state")

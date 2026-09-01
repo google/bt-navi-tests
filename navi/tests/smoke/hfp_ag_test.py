@@ -21,6 +21,7 @@ import enum
 import io
 import itertools
 import re
+from unittest import mock
 import wave
 
 from bumble import core
@@ -40,6 +41,7 @@ from navi.utils import android_constants
 from navi.utils import audio
 from navi.utils import bl4a_api
 from navi.utils import constants
+from navi.utils import errors
 from navi.utils import lc3
 
 _DEFAULT_STEP_TIMEOUT_SECONDS = 15.0
@@ -53,6 +55,10 @@ _RECORDING_PATH = "/storage/self/primary/Recordings/record.wav"
 _HFP_FRAME_DURATION = 0.0075  # 7.5ms
 _MAX_FRAME_SIZE = 240
 _ACTION_VOICE_COMMAND = "android.intent.action.VOICE_COMMAND"
+_MOCK_CONNECTION_SERVICE_CLASS = (
+    f"{android_constants.PACKAGE_NAME_BLUETOOTH_SNIPPET}.MockConnectionService"
+)
+_MOCK_CONNECTION_SERVICE_ID = "mock_connection_service"
 _MSBC_AUDIO_FILE = "navi/tests/data/sine1000hz_16khz_1s.sbc"
 _LC3_AUDIO_FILE = "navi/tests/data/sine1000hz_32khz_1s.lc3"
 _AG_SDP_FEATURE_MASK = (
@@ -137,7 +143,15 @@ class HfpAgTest(navi_test_base.TwoDevicesTestBase):
       self.test_class_context.callback(callback, package)
 
   @override
+  async def async_setup_test(self) -> None:
+    await super().async_setup_test()
+    self.logger.info("[DUT] Disconnect all active calls.")
+    self.dut.bt.disconnectAllCalls()
+
+  @override
   async def async_teardown_test(self) -> None:
+    self.logger.info("[DUT] Disconnect all active calls.")
+    self.dut.bt.disconnectAllCalls()
     self.logger.info("[DUT] Stop audio.")
     self.dut.bt.audioStop()
 
@@ -946,6 +960,7 @@ class HfpAgTest(navi_test_base.TwoDevicesTestBase):
           _CallAgIndicator.INACTIVE,
       )
 
+  @navi_test_base.timeout(120.0)
   async def test_update_battery_level(self) -> None:
     """Tests updating battery level indicator from HF.
 
@@ -1281,6 +1296,14 @@ class HfpAgTest(navi_test_base.TwoDevicesTestBase):
       self.logger.info("[DUT] Wait for call state to be ACTIVE.")
       await self._wait_for_call_state(telecom_cb, _CallState.ACTIVE)
 
+      self.logger.info("[REF] Wait for HFP AG call indicator to be ACTIVE.")
+      async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+        self.assertEqual(
+            await ag_indicators[_AgIndicator.CALL].get(),
+            _CallAgIndicator.ACTIVE,
+            "[REF] HFP AG call indicator is not ACTIVE.",
+        )
+
       self.logger.info("[REF] Hold call.")
       await ref_hfp_protocol.execute_command("AT+CHLD=2")
 
@@ -1528,7 +1551,7 @@ class HfpAgTest(navi_test_base.TwoDevicesTestBase):
 
     self.logger.info("[DUT] Switch call endpoint to SPEAKER.")
     await call.request_call_endpoint_switch(
-        android_constants.CallEndpointType.SPEAKER
+        endpoint_type=android_constants.CallEndpointType.SPEAKER
     )
 
     self.logger.info("[DUT] Wait for SCO disconnected.")
@@ -1543,7 +1566,7 @@ class HfpAgTest(navi_test_base.TwoDevicesTestBase):
 
     self.logger.info("[DUT] Switch call endpoint to SCO.")
     await call.request_call_endpoint_switch(
-        android_constants.CallEndpointType.BLUETOOTH
+        endpoint_type=android_constants.CallEndpointType.BLUETOOTH
     )
 
     self.logger.info("[DUT] Wait for SCO connected.")
@@ -1552,6 +1575,243 @@ class HfpAgTest(navi_test_base.TwoDevicesTestBase):
             address=self.ref.address, state=_ScoState.CONNECTED
         )
     )
+
+  def _setup_mock_connection_service(self) -> None:
+    phone_account_handle = (
+        android_constants.PACKAGE_NAME_BLUETOOTH_SNIPPET,
+        _MOCK_CONNECTION_SERVICE_CLASS,
+        _MOCK_CONNECTION_SERVICE_ID,
+    )
+    self.logger.info("[DUT] Register mock phone account.")
+    self.dut.bt.registerPhoneAccount(
+        *phone_account_handle, "Mock Connection Service"
+    )
+
+    self.logger.info("[DUT] Enable and set mock phone account as default.")
+    self.dut.bt.setPhoneAccountEnabled(
+        *phone_account_handle,
+        True,
+    )
+    self.dut.bt.setUserSelectedOutgoingPhoneAccount(*phone_account_handle)
+
+    def cleanup() -> None:
+      self.logger.info("[DUT] Clean up mock phone account.")
+      self.dut.bt.setUserSelectedOutgoingPhoneAccount()
+      self.dut.bt.setPhoneAccountEnabled(
+          *phone_account_handle,
+          False,
+      )
+      self.dut.bt.unregisterPhoneAccount(*phone_account_handle)
+
+    self.test_case_context.callback(cleanup)
+
+  async def test_dial_outgoing_call_from_ref(self) -> None:
+    """Tests outgoing dial from REF (ATD).
+
+    Test steps:
+      1. Set default dialer to snippet on DUT.
+      2. Enable and configure mock connection service on DUT.
+      3. Connect and pair REF (HFP connected).
+      4. Register Telecom callback on DUT.
+      5. Dial phone number from REF using ATD.
+      6. Verify call dialing event on DUT.
+    """
+    self._setup_mock_connection_service()
+
+    self.logger.info("[REF] Setup HFP server.")
+    ref_hfp_protocol_queue = hfp_ext.HfProtocol.setup_server(
+        self.ref.device,
+        sdp_handle=_HFP_SDP_HANDLE,
+        configuration=hfp_ext.make_hf_configuration(),
+    )
+
+    ag_cb = self.dut.bl4a.register_callback(_Module.HFP_AG)
+    telecom_cb = self.dut.bl4a.register_callback(_Module.TELECOM)
+    self.test_case_context.push(ag_cb)
+    self.test_case_context.push(telecom_cb)
+
+    await self.classic_connect_and_pair(connect_profiles=True)
+
+    self.logger.info("[DUT] Wait for HFP connected.")
+    await ag_cb.wait_for_event(
+        bl4a_api.ProfileActiveDeviceChanged(address=self.ref.address),
+    )
+
+    self.logger.info("[REF] Wait for HFP connected.")
+    async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+      ref_hfp_protocol = await ref_hfp_protocol_queue.get()
+
+      self.logger.info("[REF] Wait for SLC initialized.")
+      await ref_hfp_protocol.slc_initialized.wait()
+
+    dial_number = "123456789"
+    self.logger.info("[REF] Send ATD%s;", dial_number)
+    dial_task = asyncio.create_task(
+        ref_hfp_protocol.execute_command(f"ATD{dial_number};")
+    )
+
+    self.logger.info("[DUT] Wait for call dialing event.")
+    await telecom_cb.wait_for_event(
+        bl4a_api.CallStateChanged(
+            handle=f"tel:{dial_number}",
+            state=android_constants.CallState.DIALING,
+            name=mock.ANY,
+        ),
+    )
+
+    async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+      self.logger.info("[REF] Wait for dial task to complete.")
+      await dial_task
+
+  async def test_last_number_redial_from_ref(self) -> None:
+    """Tests last number redial from REF (AT+BLDN).
+
+    Test steps:
+      1. Set default dialer to snippet on DUT.
+      2. Enable and configure mock connection service on DUT.
+      3. Connect and pair REF (HFP connected).
+      4. Register Telecom callback on DUT.
+      5. Inject an outgoing call log to call log database on DUT.
+      6. Redial from REF using AT+BLDN.
+      7. Verify call dialing event on DUT.
+    """
+    self._setup_mock_connection_service()
+
+    self.logger.info("[REF] Setup HFP server.")
+    ref_hfp_protocol_queue = hfp_ext.HfProtocol.setup_server(
+        self.ref.device,
+        sdp_handle=_HFP_SDP_HANDLE,
+        configuration=hfp_ext.make_hf_configuration(),
+    )
+
+    ag_cb = self.dut.bl4a.register_callback(_Module.HFP_AG)
+    telecom_cb = self.dut.bl4a.register_callback(_Module.TELECOM)
+    self.test_case_context.push(ag_cb)
+    self.test_case_context.push(telecom_cb)
+
+    # Clean and inject call logs.
+    self.logger.info("[DUT] Clear call logs.")
+    self.dut.bt.clearCallLogs()
+    self.test_case_context.callback(self.dut.bt.clearCallLogs)
+
+    redial_number = "987654321"
+    self.logger.info("[DUT] Add outgoing call log for %s.", redial_number)
+    self.dut.bt.addCallLogs([{
+        "number": redial_number,
+        "name": "Last Dialer Test",
+        "date": 1727273204595,
+        "duration": 10000,
+        "call_type": 2,  # OUTGOING_TYPE
+    }])
+
+    await self.classic_connect_and_pair(connect_profiles=True)
+
+    self.logger.info("[DUT] Wait for HFP connected.")
+    await ag_cb.wait_for_event(
+        bl4a_api.ProfileActiveDeviceChanged(address=self.ref.address),
+    )
+
+    self.logger.info("[REF] Wait for HFP connected.")
+    async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+      ref_hfp_protocol = await ref_hfp_protocol_queue.get()
+
+      self.logger.info("[REF] Wait for SLC initialized.")
+      await ref_hfp_protocol.slc_initialized.wait()
+
+    self.logger.info("[REF] Send AT+BLDN.")
+    redial_task = asyncio.create_task(
+        ref_hfp_protocol.execute_command("AT+BLDN")
+    )
+
+    self.logger.info("[DUT] Wait for call dialing event.")
+    await telecom_cb.wait_for_event(
+        bl4a_api.CallStateChanged(
+            handle=f"tel:{redial_number}",
+            state=android_constants.CallState.DIALING,
+            name=mock.ANY,
+        ),
+    )
+
+    async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+      self.logger.info("[REF] Wait for redial task to complete.")
+      await redial_task
+
+  async def test_sink_audio_policy_connecting_policy_not_allowed(self) -> None:
+    """Tests sink audio policy not allowed for connecting time.
+
+    Test steps:
+      1. Setup HFP connection.
+      2. Verify REF is set as active device on DUT.
+      3. REF sends sink audio policy to NOT_ALLOWED for connecting time.
+      4. Verify DUT removes REF from active device.
+      5. Disconnect HFP.
+      6. Reconnect HFP.
+      7. Verify REF is not set active on reconnect.
+    """
+    self.logger.info("[REF] Setup HF server.")
+    hfp_configuration = hfp.HfConfiguration(
+        supported_hf_features=[],
+        supported_hf_indicators=[],
+        supported_audio_codecs=[],
+    )
+    ref_hfp_protocol_queue = hfp_ext.HfProtocol.setup_server(
+        self.ref.device,
+        sdp_handle=_HFP_SDP_HANDLE,
+        configuration=hfp_configuration,
+    )
+
+    ag_cb = self.dut.bl4a.register_callback(_Module.HFP_AG)
+    self.test_case_context.push(ag_cb)
+
+    await self.classic_connect_and_pair(connect_profiles=True)
+
+    self.logger.info("[DUT] Wait for HFP connected and active.")
+    await ag_cb.wait_for_event(
+        bl4a_api.ProfileActiveDeviceChanged(address=self.ref.address),
+    )
+
+    async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+      self.logger.info("[REF] Wait for HFP connected.")
+      ref_hfp_protocol = await ref_hfp_protocol_queue.get()
+
+      self.logger.info("[REF] Wait for SLC initialized.")
+      await ref_hfp_protocol.slc_initialized.wait()
+
+    self.logger.info(
+        "[REF] Send SINKAUDIOPOLICY: UNCONFIGURED, NOT_ALLOWED, UNCONFIGURED"
+    )
+    await ref_hfp_protocol.set_sink_audio_policy(
+        call_establish=hfp_ext.SinkAudioPolicy.UNCONFIGURED,
+        connecting_time=hfp_ext.SinkAudioPolicy.NOT_ALLOWED,
+        in_band_ringtone=hfp_ext.SinkAudioPolicy.UNCONFIGURED,
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
+
+    self.logger.info("[DUT] Wait for active device to become null.")
+    await ag_cb.wait_for_event(
+        bl4a_api.ProfileActiveDeviceChanged(address=None),
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
+
+    self.logger.info("[DUT] Disconnect HFP.")
+    await self.disconnect_with_check(
+        self.ref.address, android_constants.Transport.CLASSIC
+    )
+
+    self.logger.info("[DUT] Reconnect HFP.")
+    self.dut.bt.connect(self.ref.address)
+
+    async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+      self.logger.info("[REF] Wait for HFP reconnected and SLC initialized.")
+      ref_hfp_protocol2 = await ref_hfp_protocol_queue.get()
+      await ref_hfp_protocol2.slc_initialized.wait()
+
+    self.logger.info("[DUT] Verify REF is not set active on reconnect")
+    with self.assertRaises(errors.AsyncTimeoutError):
+      await ag_cb.wait_for_event(
+          bl4a_api.ProfileActiveDeviceChanged(address=self.ref.address),
+          timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+      )
 
 
 if __name__ == "__main__":

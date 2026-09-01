@@ -165,6 +165,14 @@ class BroadcastTest(navi_test_base.TwoDevicesTestBase):
   @override
   async def async_setup_test(self) -> None:
     await super().async_setup_test()
+    if self._broadcast_enabled:
+      self.dut.bt.waitForProfileReady(
+          android_constants.Profile.LE_AUDIO_BROADCAST
+      )
+    if self._bass_enabled:
+      self.dut.bt.waitForProfileReady(
+          android_constants.Profile.LE_AUDIO_BROADCAST_ASSISTANT
+      )
     self._ref_bass_service = _BroadcastAudioScanService()
 
   @override

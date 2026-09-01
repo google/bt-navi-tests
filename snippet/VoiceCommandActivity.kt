@@ -26,6 +26,7 @@ class VoiceCommandActivity : Activity() {
     super.onStart()
     Log.i(TAG, "onStart")
     sendBroadcast(Intent(ACTION_COMMAND).putExtra(EXTRA_INTENT, intent).setPackage(packageName))
+    finish()
   }
 
   companion object {

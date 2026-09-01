@@ -124,6 +124,10 @@ class ThroughputTest(navi_test_base.TwoDevicesTestBase):
       phy: The PHY to be used for the connection.
       coded_options: The coded PHY options to be used for the connection.
     """
+    ref_phy = hci.Phy(int(phy))
+    if not self.ref.device.supports_le_phy(ref_phy):
+      self.skipTest(f"Reference controller does not support PHY {phy.name}")
+
     tx_throughput_list = list[float]()
     rx_throughput_list = list[float]()
     ref_sdu_rx_queue = asyncio.Queue[bytes]()
@@ -160,6 +164,9 @@ class ThroughputTest(navi_test_base.TwoDevicesTestBase):
         )
         self.assertEqual(new_tx_phy, phy)
         self.assertEqual(new_rx_phy, phy)
+        await dut_gatt_client.request_connection_priority(
+            android_constants.ConnectionPriority.HIGH
+        )
 
         ref_accept_future: asyncio.Future[l2cap.LeCreditBasedChannel] = (
             asyncio.get_running_loop().create_future()
@@ -257,6 +264,10 @@ class ThroughputTest(navi_test_base.TwoDevicesTestBase):
       phy: The PHY to be used for the connection.
       coded_options: The coded PHY options to be used for the connection.
     """
+    ref_phy = hci.Phy(int(phy))
+    if not self.ref.device.supports_le_phy(ref_phy):
+      self.skipTest(f"Reference controller does not support PHY {phy.name}")
+
     ref_written_queue = asyncio.Queue[bytes]()
     expected_throughput_bytes_per_second = (
         _EXPECTED_THROUGHPUT_BYTES_PER_SECOND[(phy, coded_options)]
@@ -336,6 +347,9 @@ class ThroughputTest(navi_test_base.TwoDevicesTestBase):
         self.assertEqual(new_tx_phy, phy)
         self.assertEqual(new_rx_phy, phy)
         self.logger.info("[DUT] PHY checked.")
+        await gatt_client.request_connection_priority(
+            android_constants.ConnectionPriority.HIGH
+        )
 
         characteristic_handle = bl4a_api.find_characteristic_by_uuid(
             _CHARACTERISTIC_UUID, await gatt_client.discover_services()

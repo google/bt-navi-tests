@@ -14,6 +14,8 @@
 
 """Extended RFCOMM implemenatation from Bumble."""
 
+from __future__ import annotations
+
 from collections.abc import Callable
 from typing import Self, TypeAlias
 
@@ -128,7 +130,7 @@ class Manager:
         (server := device.l2cap_channel_manager.servers.get(rfcomm.RFCOMM_PSM))
         and server.handler
         and (obj := getattr(server.handler, '__self__', None))
-        and isinstance(obj, Manager)
+        and isinstance(obj, cls)
     ):
       return obj
     return None

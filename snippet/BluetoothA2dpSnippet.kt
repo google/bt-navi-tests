@@ -19,6 +19,7 @@ package com.google.wireless.android.pixel.bluetooth.snippet
 import android.bluetooth.BluetoothA2dp
 import android.bluetooth.BluetoothCodecConfig
 import android.bluetooth.BluetoothCodecStatus
+import android.bluetooth.BluetoothCodecType
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
@@ -130,6 +131,10 @@ class BluetoothA2dpSnippet : Snippet {
   fun setA2dpOptionalCodecsEnabled(address: String, enabled: Int) {
     proxy.setOptionalCodecsEnabled(bluetoothAdapter.getRemoteDevice(address), enabled)
   }
+
+  /* Get supported A2DP codec types. */
+  @Rpc(description = "Get supported A2DP codec types")
+  fun getA2dpSupportedCodecTypes(): List<BluetoothCodecType> = proxy.supportedCodecTypes.toList()
 
   companion object {
     const val TAG = "BluetoothA2dpSnippet"

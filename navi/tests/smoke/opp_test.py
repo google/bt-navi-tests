@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import datetime
 import pathlib
+import re
 import sys
 import tempfile
 from typing import TypeAlias
@@ -40,12 +41,13 @@ from navi.utils import retry
 
 _OPP_SERVICE_RECORD_HANDLE = 1
 _DEFAULT_TIMEOUT_SECONDS = 30.0
-_UI_TIMEOUT = datetime.timedelta(seconds=10.0)
-_TEST_FILE_MIME_TYPE = 'text/plain'
+_UI_TIMEOUT = datetime.timedelta(seconds=20.0)
+_TEST_FILE_MIME_TYPE = 'image/jpeg'
 _VIDEO_SERVICE_NAME = 'video'
-_TEST_DATA = bytes(i % 256 for i in range(200000))
-_POSITIVE_BUTTON_RESOURCE_ID = 'android:id/button1'
-_NEGATIVE_BUTTON_RESOURCE_ID = 'android:id/button2'
+_TEST_DATA = bytes(i % 256 for i in range(100000))
+_ACTION_ACCEPT = 'android.btopp.intent.action.ACCEPT'
+_ACTION_DECLINE = 'android.btopp.intent.action.DECLINE'
+
 
 _CallbackHandler: TypeAlias = bl4a_api.CallbackHandler
 _Module: TypeAlias = bl4a_api.Module
@@ -53,6 +55,7 @@ _Module: TypeAlias = bl4a_api.Module
 
 class OppTest(navi_test_base.TwoDevicesTestBase):
   ref_opp_server: opp.Server
+  bluetooth_package: str
 
   @override
   async def async_setup_class(self) -> None:
@@ -75,17 +78,43 @@ class OppTest(navi_test_base.TwoDevicesTestBase):
     self.dut.shell('svc power stayon true')
     # Dismiss the keyguard.
     self.dut.shell('wm dismiss-keyguard')
+    # Disable heads up notifications to prevent popups from blocking the UI.
+    self.dut.shell('settings put global heads_up_notifications_enabled 0')
 
-    await self._setup_paired_devices()
+    # CoD must include OBJECT_TRANSFER for OPP to work.
+    self.ref.config.class_of_device = int(
+        core.ClassOfDevice(
+            major_service_classes=core.ClassOfDevice.MajorServiceClasses.OBJECT_TRANSFER,
+            major_device_class=core.ClassOfDevice.MajorDeviceClass.PHONE,
+            minor_device_class=core.ClassOfDevice.PhoneMinorDeviceClass.SMARTPHONE,
+        )
+    )
 
+    if match := re.search(
+        r'^package:(com\.(?:google\.)?android\.bluetooth)$',
+        self.dut.shell('pm list packages'),
+        re.MULTILINE,
+    ):
+      self.bluetooth_package = match.group(1)
+    else:
+      self.fail('Failed to find Bluetooth package.')
+
+  @override
+  async def async_teardown_class(self) -> None:
+    await super().async_teardown_class()
+    # Re-enable heads up notifications.
+    self.dut.shell('settings put global heads_up_notifications_enabled 1')
+    # Stop staying awake during the test.
+    self.dut.shell('svc power stayon false')
+
+  @override
   @retry.retry_on_exception()
-  async def _setup_paired_devices(self) -> None:
-    # Reset devices.
-    self.assertTrue(self.dut.bt.enable())
-    self.dut.bt.waitForAdapterState(android_constants.AdapterState.ON)
-    self.dut.bt.factoryReset()
-    async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
-      await self.ref.reset()
+  async def async_setup_test(self) -> None:
+    self.ref.config.name = uuid.uuid4().hex[:8]
+    await super().async_setup_test()
+    self.dut.ui.screen.on()
+    self.dut.shell('wm dismiss-keyguard')
+    self.dut.ui.press.home()
 
     # Set up OPP server on REF.
     self.ref_opp_server = opp.Server(self.ref.device)
@@ -112,21 +141,31 @@ class OppTest(navi_test_base.TwoDevicesTestBase):
           ),
       )
 
-  @override
-  async def async_teardown_class(self) -> None:
-    await super().async_teardown_class()
-    # Stop staying awake during the test.
-    self.dut.shell('svc power stayon false')
+  async def _wait_for_incoming_share_id(self) -> int:
+    """Waits for incoming OPP file transfer request via ADB query."""
+    async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
+      while True:
+        output = self.dut.shell(
+            'content query --uri content://com.android.bluetooth.opp/btopp'
+            ' --projection _id:confirm:direction --where "direction=1 AND'
+            ' (confirm=0 OR confirm IS NULL)"'
+        )
+        if match := re.search(r'_id=(\d+)', output or ''):
+          return int(match.group(1))
+        await asyncio.sleep(0.2)
 
-  @override
-  @retry.retry_on_exception()
-  async def async_setup_test(self) -> None:
-    # Restart Bluetooth on DUT to clear any stale state.
-    self.assertTrue(self.dut.bt.disable())
-    self.dut.bt.waitForAdapterState(android_constants.AdapterState.OFF)
-    self.assertTrue(self.dut.bt.enable())
-    self.dut.bt.waitForAdapterState(android_constants.AdapterState.ON)
-    self.dut.shell('input keyevent KEYCODE_HOME')
+  def _answer_incoming_file(self, share_id: int | str, accept: bool) -> None:
+    """Accepts an incoming OPP file transfer via ADB broadcast."""
+    self.dut.shell([
+        'am',
+        'broadcast',
+        '-a',
+        _ACTION_ACCEPT if accept else _ACTION_DECLINE,
+        '-d',
+        f'content://com.android.bluetooth.opp/btopp/{share_id}',
+        '-n',
+        f'{self.bluetooth_package}/com.android.bluetooth.opp.BluetoothOppReceiver',
+    ])
 
   async def _make_opp_client_from_ref(self, use_l2cap: bool) -> opp.Client:
     async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
@@ -160,6 +199,31 @@ class OppTest(navi_test_base.TwoDevicesTestBase):
         rfcomm_client = await rfcomm.Client(ref_dut_acl).start()
         bearer = await rfcomm_client.open_dlc(sdp_info.rfcomm_channel)
       return opp.Client(bearer)
+
+  @retry.retry_on_exception()
+  async def _select_target_device(self) -> None:
+    """Selects the target device in DevicePickerActivity."""
+    ref_name = self.ref.device.name
+    target_selector = self.dut.ui(textContains=ref_name)
+    # Wait for the target device preference item to appear in the device
+    # picker.
+    self.assertTrue(
+        await asyncio.to_thread(
+            lambda: target_selector.wait.exists(timeout=_UI_TIMEOUT)
+        ),
+        f'Target device with name {ref_name} did not appear in device picker.',
+    )
+
+    # Wait for the UI to stabilize after window animations and list updates.
+    await asyncio.to_thread(self.dut.ui.wait.idle)
+    # Click the preference item and wait for the picker to be dismissed.
+    self.assertTrue(
+        await asyncio.to_thread(
+            lambda: target_selector.click()
+            and target_selector.wait.gone(timeout=_UI_TIMEOUT)
+        ),
+        f'Failed to select target device with name {ref_name}.',
+    )
 
   @navi_test_base.named_parameterized(
       rfcomm=False,
@@ -202,30 +266,23 @@ class OppTest(navi_test_base.TwoDevicesTestBase):
         delete=(sys.platform != 'win32'),
     ) as temp_file:
       temp_file.write(_TEST_DATA)
+      temp_file.flush()
       self.dut.adb.push(
-          [temp_file.name, f'/data/media/{user_id}/opp_test_file.txt']
+          [temp_file.name, f'/data/media/{user_id}/opp_test_file.jpg']
       )
-
-    # [DUT] Set a random alias to avoid collision with other tests.
-    self.dut.bt.setAlias(self.ref.address, str(uuid.uuid4()))
 
     self.logger.info('[DUT] Send sharing file intent.')
     # The file path is different here:
     #  - /storage/ is accessible for Android apps.
     #  - /data/media/ is accessible for adb.
     self.dut.bt.oppShareFiles(
-        ['/storage/self/primary/opp_test_file.txt'], _TEST_FILE_MIME_TYPE
+        ['/storage/self/primary/opp_test_file.jpg'], _TEST_FILE_MIME_TYPE
     )
 
     self.logger.info('[DUT] Select the target device')
     # After receiving the sharing file intent, OPP service will pop a Device
     # Selector Activity, showing all available devices with their alias names.
-    ui_result = await asyncio.to_thread(
-        lambda: self.dut.ui(
-            textContains=self.dut.bt.getAlias(self.ref.address)
-        ).wait.click(timeout=_UI_TIMEOUT)
-    )
-    self.assertTrue(ui_result, 'Failed to click the target device.')
+    await self._select_target_device()
 
     self.logger.info('[REF] Wait for OPP connection.')
     async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
@@ -236,9 +293,80 @@ class OppTest(navi_test_base.TwoDevicesTestBase):
       received_file = await opp_server_connection.completed_sessions.get()
 
     # [REF] Check the received file.
-    self.assertEqual(received_file.name, 'opp_test_file.txt')
+    self.assertEqual(received_file.name, 'opp_test_file.jpg')
     self.assertStartsWith(received_file.file_type, _TEST_FILE_MIME_TYPE)
     self.assertEqual(received_file.body, _TEST_DATA)
+
+  @navi_test_base.named_parameterized(
+      rfcomm=False,
+      l2cap=True,
+  )
+  async def test_outbound_multiple_files(self, use_l2cap: bool) -> None:
+    """Tests sending multiple files from DUT to REF.
+
+    Test steps:
+      1. Generate test files on DUT.
+      2. Set a random alias to avoid collision with other tests.
+      3. Send a sharing files intent from DUT.
+      4. Select the target device on DUT.
+      5. Wait for OPP connection on REF.
+      6. Wait for file transfers to complete on REF.
+      7. Check the received files on REF.
+
+    Args:
+      use_l2cap: Whether to use L2CAP for OPP connection.
+    """
+    self.ref.device.sdp_service_records = {
+        _OPP_SERVICE_RECORD_HANDLE: opp.make_sdp_records(
+            opp.SdpInfo(
+                service_record_handle=_OPP_SERVICE_RECORD_HANDLE,
+                rfcomm_channel=self.ref_opp_server.rfcomm_channel,
+                profile_version=opp.Version.V_1_2,
+                goep_l2cap_psm=(
+                    self.ref_opp_server.l2cap_server.psm if use_l2cap else None
+                ),
+            )
+        )
+    }
+
+    user_id = self.dut.adb.current_user_id
+    file_names = ['opp_test_file_1.jpg', 'opp_test_file_2.jpg']
+    dut_file_paths: list[str] = []
+
+    # [DUT] Generate test files.
+    for name in file_names:
+      with tempfile.NamedTemporaryFile(
+          mode='wb',
+          delete=(sys.platform != 'win32'),
+      ) as temp_file:
+        temp_file.write(_TEST_DATA)
+        temp_file.flush()
+        self.dut.adb.push([temp_file.name, f'/data/media/{user_id}/{name}'])
+        dut_file_paths.append(f'/storage/self/primary/{name}')
+
+    self.logger.info('[DUT] Send sharing files intent.')
+    self.dut.bt.oppShareFiles(dut_file_paths, _TEST_FILE_MIME_TYPE)
+
+    self.logger.info('[DUT] Select the target device')
+    await self._select_target_device()
+
+    self.logger.info('[REF] Wait for OPP connection.')
+    async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
+      opp_server_connection = await self.ref_opp_server.wait_connection()
+
+    self.logger.info('[REF] Wait file transfers to complete.')
+    received_files: list[opp.TransferSession] = []
+    async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
+      for _ in file_names:
+        received_file = await opp_server_connection.completed_sessions.get()
+        received_files.append(received_file)
+
+    # [REF] Check the received files.
+    received_names = [f.name for f in received_files]
+    self.assertCountEqual(received_names, file_names)
+    for received_file in received_files:
+      self.assertStartsWith(received_file.file_type, _TEST_FILE_MIME_TYPE)
+      self.assertEqual(received_file.body, _TEST_DATA)
 
   @navi_test_base.named_parameterized(
       rfcomm=False,
@@ -252,16 +380,16 @@ class OppTest(navi_test_base.TwoDevicesTestBase):
       2. Find SDP record for OPP.
       3. Connect OPP to DUT.
       4. Start file transfer from REF.
-      5. Accept file transfer on DUT.
+      5. Accept file transfer on DUT via ADB.
       6. Wait for file transfer to complete on REF.
 
     Args:
       use_l2cap: Whether to use L2CAP for OPP connection.
     """
     user_id = self.dut.adb.current_user_id
-    file_name = f'opp_test_file_{uuid.uuid4().hex[:8]}.txt'
+    file_name = f'opp_test_file_{uuid.uuid4().hex[:8]}.jpg'
     file_name_pattern_android = (
-        f'/data/media/{user_id}/Download/opp_test_file*.txt'
+        f'/data/media/{user_id}/Download/opp_test_file*.jpg'
     )
     # Make sure there isn't any similar file on DUT.
     with contextlib.suppress(adb.AdbError):
@@ -282,24 +410,10 @@ class OppTest(navi_test_base.TwoDevicesTestBase):
             file_type=_TEST_FILE_MIME_TYPE,
         )
     )
-    self.logger.info('[DUT] Accept file transfer.')
-    # A notification will be popped up on DUT when there is an incoming file
-    # transfer request. We need to click the notification to pop a dialog, and
-    # then click the ACCEPT button to accept the file transfer.
-    self.dut.shell('cmd statusbar expand-notifications')
-    ui_result = await asyncio.to_thread(
-        lambda: self.dut.ui(textContains=file_name).wait.click(
-            timeout=_UI_TIMEOUT
-        )
-    )
-    self.assertTrue(ui_result, 'Failed to click the file name.')
-    ui_result = await asyncio.to_thread(
-        lambda: self.dut.ui(
-            res=_POSITIVE_BUTTON_RESOURCE_ID,
-            clickable=True,
-        ).wait.click(timeout=_UI_TIMEOUT)
-    )
-    self.assertTrue(ui_result, 'Failed to click the accept button.')
+    self.logger.info('[DUT] Wait for incoming file event.')
+    share_id = await self._wait_for_incoming_share_id()
+    self.logger.info('[DUT] Accept incoming file share: %s', share_id)
+    self._answer_incoming_file(share_id, accept=True)
 
     self.logger.info('[REF] Wait file transfer to complete.')
     async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
@@ -331,13 +445,13 @@ class OppTest(navi_test_base.TwoDevicesTestBase):
       2. Find SDP record for OPP.
       3. Connect OPP to DUT.
       4. Start file transfer from REF.
-      5. Reject file transfer on DUT.
+      5. Reject file transfer on DUT via ADB.
       6. Wait for file transfer to complete on REF.
 
     Args:
       use_l2cap: Whether to use L2CAP for OPP connection.
     """
-    file_name = f'opp_test_file_{uuid.uuid4().hex[:8]}.txt'
+    file_name = f'opp_test_file_{uuid.uuid4().hex[:8]}.jpg'
 
     opp_client = await self._make_opp_client_from_ref(use_l2cap)
     async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
@@ -351,21 +465,10 @@ class OppTest(navi_test_base.TwoDevicesTestBase):
             file_type=_TEST_FILE_MIME_TYPE,
         )
     )
-    self.logger.info('[DUT] Reject file transfer.')
-    self.dut.shell('cmd statusbar expand-notifications')
-    ui_result = await asyncio.to_thread(
-        lambda: self.dut.ui(textContains=file_name).wait.click(
-            timeout=_UI_TIMEOUT
-        )
-    )
-    self.assertTrue(ui_result, 'Failed to click the file name.')
-    ui_result = await asyncio.to_thread(
-        lambda: self.dut.ui(
-            res=_NEGATIVE_BUTTON_RESOURCE_ID,
-            clickable=True,
-        ).wait.click(timeout=_UI_TIMEOUT)
-    )
-    self.assertTrue(ui_result, 'Failed to click the reject button.')
+    self.logger.info('[DUT] Wait for incoming file event.')
+    share_id = await self._wait_for_incoming_share_id()
+    self.logger.info('[DUT] Reject incoming file share: %s', share_id)
+    self._answer_incoming_file(share_id, accept=False)
 
     self.logger.info('[REF] Wait file transfer to complete.')
     async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):

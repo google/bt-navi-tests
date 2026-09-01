@@ -22,16 +22,17 @@ import dataclasses
 import enum
 import logging
 import struct
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar, Self, TypeVar
 
 from bumble import core
 from bumble import device as bumble_device
+from bumble import gatt
+from bumble import gatt_adapters
 from bumble import hci
 from bumble import l2cap
 from bumble import sdp
 from bumble import utils
 from typing_extensions import override
-
 
 logger = logging.getLogger(__name__)
 
@@ -1100,3 +1101,114 @@ async def find_device_sdp_record(
     except TypeError:
       logger.exception("Cannot build SDP information")
       return None
+
+
+# -----------------------------------------------------------------------------
+# Head Tracker GATT Service Helpers
+# -----------------------------------------------------------------------------
+
+
+class HeadtrackerTransport(enum.IntFlag):
+  ACL = 0x01
+  ISO = 0x02
+
+
+@dataclasses.dataclass
+class HeadtrackerReport:
+  """Head Tracker control report format."""
+
+  class Transport(enum.IntEnum):
+    ACL = 0
+    ISO = 1
+
+  reporting_state: bool
+  power_state: bool
+  report_interval_ms: int
+  transport: Transport
+
+  def __bytes__(self) -> bytes:
+    return bytes([
+        (
+            (1 if self.reporting_state else 0)
+            | (1 << 1 if self.power_state else 0)
+            | self.report_interval_ms << 2
+        ),
+        self.transport.value,
+    ])
+
+  @classmethod
+  def from_bytes(cls, data: bytes) -> Self:
+    return cls(
+        reporting_state=bool(data[0] & 1),
+        power_state=bool(data[0] & (1 << 1)),
+        report_interval_ms=data[0] >> 2,
+        transport=cls.Transport(data[1]),
+    )
+
+
+class HeadtrackerService(gatt.TemplateService):
+  """Head Tracker GATT service."""
+
+  # Service UUID.
+  UUID = core.UUID("109b862f-50e3-45cc-8ea1-ac62de4846d1")
+
+  # Characteristic UUIDs.
+  VERSION_CHARACTERISTIC_UUID = core.UUID(
+      "b4eb9919-a910-46a2-a9dd-fec2525196fd"
+  )
+  CONTROL_CHARACTERISTIC_UUID = core.UUID(
+      "8584cbb5-2d58-45a3-ab9d-583e0958b067"
+  )
+  REPORT_CHARACTERISTIC_UUID = core.UUID("e66dd173-b2ae-4f5a-ae16-0162af8038ae")
+
+  version_characteristic: gatt.Characteristic
+  control_characteristic: gatt_adapters.SerializableCharacteristicAdapter
+  report_characteristic: gatt.Characteristic
+
+  def __init__(
+      self,
+      device: bumble_device.Device,
+      initial_report: HeadtrackerReport | None = None,
+  ) -> None:
+    if initial_report is None:
+      initial_report = HeadtrackerReport(
+          reporting_state=True,
+          power_state=True,
+          report_interval_ms=10,
+          transport=HeadtrackerReport.Transport.ACL,
+      )
+    self.version_characteristic = gatt.Characteristic(
+        self.VERSION_CHARACTERISTIC_UUID,
+        gatt.Characteristic.Properties.READ
+        | gatt.Characteristic.Properties.WRITE,
+        gatt.Characteristic.READABLE | gatt.Characteristic.WRITEABLE,
+        b"#AndroidHeadTracker#2.0#1"
+        + bytes(8)
+        + b"BT"
+        + bytes(device.random_address)[::-1],
+    )
+    self.control_characteristic = (
+        gatt_adapters.SerializableCharacteristicAdapter(
+            gatt.Characteristic(
+                self.CONTROL_CHARACTERISTIC_UUID,
+                gatt.Characteristic.Properties.READ
+                | gatt.Characteristic.Properties.WRITE,
+                gatt.Characteristic.READABLE | gatt.Characteristic.WRITEABLE,
+                value=initial_report,
+            ),
+            HeadtrackerReport,
+        )
+    )
+    self.report_characteristic = gatt.Characteristic(
+        self.REPORT_CHARACTERISTIC_UUID,
+        gatt.Characteristic.Properties.READ
+        | gatt.Characteristic.Properties.WRITE
+        | gatt.Characteristic.Properties.NOTIFY,
+        gatt.Characteristic.READABLE | gatt.Characteristic.WRITEABLE,
+        bytes([0x00]),
+    )
+    super().__init__([
+        self.version_characteristic,
+        self.control_characteristic,
+        self.report_characteristic,
+    ])

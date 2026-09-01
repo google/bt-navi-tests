@@ -29,6 +29,9 @@ from bumble import avrcp
 from bumble import core
 from bumble import device as bumble_device
 from bumble import l2cap
+from bumble import sdp
+
+from navi.bumble_ext import obex
 
 logger = logging.getLogger(__name__)
 
@@ -566,7 +569,7 @@ class BrowsingTarget:
           transaction_label,
           avrcp.RejectedResponse(
               command.pdu_id,
-              avrcp.StatusCode.PLAYER_NOT_BROWSABLE,  # pytype: disable=wrong-arg-types
+              avrcp.StatusCode.PLAYER_NOT_BROWSABLE,
           ),
       )
       return
@@ -586,7 +589,7 @@ class BrowsingTarget:
             transaction_label,
             avrcp.RejectedResponse(
                 command.pdu_id,
-                avrcp.StatusCode.INVALID_SCOPE,  # pytype: disable=wrong-arg-types
+                avrcp.StatusCode.INVALID_SCOPE,
             ),
         )
         return
@@ -612,7 +615,7 @@ class BrowsingTarget:
           transaction_label,
           avrcp.RejectedResponse(
               command.pdu_id,
-              avrcp.StatusCode.DOES_NOT_EXIST,  # pytype: disable=wrong-arg-types
+              avrcp.StatusCode.DOES_NOT_EXIST,
           ),
       )
       return
@@ -622,7 +625,7 @@ class BrowsingTarget:
           transaction_label,
           avrcp.RejectedResponse(
               command.pdu_id,
-              avrcp.StatusCode.PARAMETER_CONTENT_ERROR,  # pytype: disable=wrong-arg-types
+              avrcp.StatusCode.PARAMETER_CONTENT_ERROR,
           ),
       )
       return
@@ -641,7 +644,7 @@ class BrowsingTarget:
       ]
 
     response = avrcp.GetItemAttributesResponse(
-        status=avrcp.StatusCode.OPERATION_COMPLETED,  # pytype: disable=wrong-arg-types
+        status=avrcp.StatusCode.OPERATION_COMPLETED,
         attribute_value_entry_list=attributes,
     )
     self.send_response(transaction_label, response)
@@ -656,7 +659,7 @@ class BrowsingTarget:
       case avrcp.Scope.MEDIA_PLAYER_LIST:
         items = [player.to_avrcp_item() for player in self.players]
         response = avrcp.GetFolderItemsResponse(
-            status=avrcp.StatusCode.OPERATION_COMPLETED,  # pytype: disable=wrong-arg-types
+            status=avrcp.StatusCode.OPERATION_COMPLETED,
             uid_counter=0,
             items=items[command.start_item : command.end_item + 1],
         )
@@ -664,19 +667,19 @@ class BrowsingTarget:
         if not self.browsed_player:
           response = avrcp.RejectedResponse(
               command.pdu_id,
-              avrcp.StatusCode.NO_AVAILABLE_PLAYERS,  # pytype: disable=wrong-arg-types
+              avrcp.StatusCode.NO_AVAILABLE_PLAYERS,
           )
         else:
           folder = self.current_folder
           if folder is None:
             response = avrcp.RejectedResponse(
                 command.pdu_id,
-                avrcp.StatusCode.NO_AVAILABLE_PLAYERS,  # pytype: disable=wrong-arg-types
+                avrcp.StatusCode.NO_AVAILABLE_PLAYERS,
             )
           else:
             items = [child.to_avrcp_item() for child in folder.children]
             response = avrcp.GetFolderItemsResponse(
-                status=avrcp.StatusCode.OPERATION_COMPLETED,  # pytype: disable=wrong-arg-types
+                status=avrcp.StatusCode.OPERATION_COMPLETED,
                 uid_counter=0,
                 items=items[command.start_item : command.end_item + 1],
             )
@@ -684,11 +687,11 @@ class BrowsingTarget:
         if not self.browsed_player:
           response = avrcp.RejectedResponse(
               command.pdu_id,
-              avrcp.StatusCode.NO_AVAILABLE_PLAYERS,  # pytype: disable=wrong-arg-types
+              avrcp.StatusCode.NO_AVAILABLE_PLAYERS,
           )
         else:
           response = avrcp.GetFolderItemsResponse(
-              status=avrcp.StatusCode.OPERATION_COMPLETED,  # pytype: disable=wrong-arg-types
+              status=avrcp.StatusCode.OPERATION_COMPLETED,
               uid_counter=0,
               items=[
                   item.to_avrcp_item()
@@ -698,7 +701,7 @@ class BrowsingTarget:
       case _:
         response = avrcp.RejectedResponse(
             command.pdu_id,
-            avrcp.StatusCode.INVALID_COMMAND,  # pytype: disable=wrong-arg-types
+            avrcp.StatusCode.INVALID_COMMAND,
         )
     self.send_response(transaction_label, response)
 
@@ -727,7 +730,7 @@ class BrowsingTarget:
     self.send_response(
         transaction_label,
         avrcp.GetTotalNumberOfItemsResponse(
-            status=avrcp.StatusCode.OPERATION_COMPLETED,  # pytype: disable=wrong-arg-types
+            status=avrcp.StatusCode.OPERATION_COMPLETED,
             uid_counter=0,
             number_of_items=count,
         ),
@@ -863,9 +866,450 @@ def setup_server(
           ).to_service_attributes()
       ),
       avrcp_target_handle: (
-          avrcp.TargetServiceSdpRecord(
+          TargetServiceSdpRecord(
               avrcp_target_handle, supported_features=avrcp_target_features
           ).to_service_attributes()
       ),
   })
   return avrcp_protocol
+
+
+@dataclasses.dataclass
+class TargetServiceSdpRecord(avrcp.TargetServiceSdpRecord):
+  """Target SDP record, extending Bumble's TargetServiceSdpRecord with BIP support."""
+
+  bip_goep_rfcomm_channel: int | None = None
+  bip_goep_l2cap_psm: int | None = None
+  browsing_psm: int | None = None
+  bip_version: tuple[int, int] | None = None
+
+  def __post_init__(self) -> None:
+    if (
+        self.bip_goep_l2cap_psm is not None
+        or self.bip_goep_rfcomm_channel is not None
+    ):
+      self.supported_features |= avrcp.TargetFeatures.SUPPORTS_COVER_ART
+      if self.bip_version is None:
+        self.bip_version = (1, 0)
+
+  @override
+  def to_service_attributes(self) -> list[sdp.ServiceAttribute]:
+    attributes = super().to_service_attributes()
+
+    # Find if 0x000D is already in attributes
+    additional_proto_idx = next(
+        (
+            i
+            for i, attr in enumerate(attributes)
+            if attr.id
+            == sdp.SDP_ADDITIONAL_PROTOCOL_DESCRIPTOR_LIST_ATTRIBUTE_ID
+        ),
+        None,
+    )
+
+    additional_protocols = []
+
+    # Browsing PSM
+    actual_browsing_psm = self.browsing_psm
+    if actual_browsing_psm is None and (
+        self.supported_features & avrcp.TargetFeatures.SUPPORTS_BROWSING
+    ):
+      actual_browsing_psm = avctp.AVCTP_BROWSING_PSM
+
+    if actual_browsing_psm is not None:
+      avctp_version_int = self.avctp_version[0] << 8 | self.avctp_version[1]
+      additional_protocols.append(
+          sdp.DataElement.sequence([
+              sdp.DataElement.sequence([
+                  sdp.DataElement.uuid(core.BT_L2CAP_PROTOCOL_ID),
+                  sdp.DataElement.unsigned_integer_16(actual_browsing_psm),
+              ]),
+              sdp.DataElement.sequence([
+                  sdp.DataElement.uuid(core.BT_AVCTP_PROTOCOL_ID),
+                  sdp.DataElement.unsigned_integer_16(avctp_version_int),
+              ]),
+          ])
+      )
+
+    # BIP L2CAP PSM
+    if self.bip_goep_l2cap_psm is not None:
+      additional_protocols.append(
+          sdp.DataElement.sequence([
+              sdp.DataElement.sequence([
+                  sdp.DataElement.uuid(core.BT_L2CAP_PROTOCOL_ID),
+                  sdp.DataElement.unsigned_integer_16(self.bip_goep_l2cap_psm),
+              ]),
+              sdp.DataElement.sequence([
+                  sdp.DataElement.uuid(core.BT_OBEX_PROTOCOL_ID),
+              ]),
+          ])
+      )
+
+    # BIP RFCOMM Channel
+    if self.bip_goep_rfcomm_channel is not None:
+      additional_protocols.append(
+          sdp.DataElement.sequence([
+              sdp.DataElement.sequence([
+                  sdp.DataElement.uuid(core.BT_L2CAP_PROTOCOL_ID),
+              ]),
+              sdp.DataElement.sequence([
+                  sdp.DataElement.uuid(core.BT_RFCOMM_PROTOCOL_ID),
+                  sdp.DataElement.unsigned_integer_8(
+                      self.bip_goep_rfcomm_channel
+                  ),
+              ]),
+              sdp.DataElement.sequence([
+                  sdp.DataElement.uuid(core.BT_OBEX_PROTOCOL_ID),
+              ]),
+          ])
+      )
+
+    if additional_protocols:
+      new_attr = sdp.ServiceAttribute(
+          sdp.SDP_ADDITIONAL_PROTOCOL_DESCRIPTOR_LIST_ATTRIBUTE_ID,
+          sdp.DataElement.sequence(additional_protocols),
+      )
+      if additional_proto_idx is not None:
+        attributes[additional_proto_idx] = new_attr
+      else:
+        attributes.append(new_attr)
+    elif additional_proto_idx is not None:
+      attributes.pop(additional_proto_idx)
+
+    return attributes
+
+  @classmethod
+  @override
+  async def find(  # type: ignore[override]
+      cls,
+      connection: bumble_device.Connection,
+  ) -> list[TargetServiceSdpRecord]:
+    """Finds SDP records for AVRCP Target."""
+    async with sdp.Client(connection) as sdp_client:
+      result = await sdp_client.search_attributes(
+          [core.BT_AV_REMOTE_CONTROL_TARGET_SERVICE],
+          [
+              sdp.SDP_SERVICE_RECORD_HANDLE_ATTRIBUTE_ID,
+              sdp.SDP_PROTOCOL_DESCRIPTOR_LIST_ATTRIBUTE_ID,
+              sdp.SDP_BLUETOOTH_PROFILE_DESCRIPTOR_LIST_ATTRIBUTE_ID,
+              sdp.SDP_SUPPORTED_FEATURES_ATTRIBUTE_ID,
+              0x000D,  # Additional Protocol Descriptor Lists
+          ],
+      )
+
+    if not result:
+      return []
+
+    records: list[TargetServiceSdpRecord] = []
+    for attribute_lists in result:
+      record = cls(0)
+      additional_protocol_descriptor_lists = None
+      for attribute in attribute_lists:
+        match attribute.id:
+          case sdp.SDP_SERVICE_RECORD_HANDLE_ATTRIBUTE_ID:
+            record.service_record_handle = attribute.value.value
+          case sdp.SDP_PROTOCOL_DESCRIPTOR_LIST_ATTRIBUTE_ID:
+            protocols = attribute.value.value
+            for proto in protocols:
+              proto_uuid = proto.value[0].value
+              if proto_uuid == core.BT_RFCOMM_PROTOCOL_ID:
+                record.bip_goep_rfcomm_channel = proto.value[1].value
+              elif proto_uuid == core.BT_AVCTP_PROTOCOL_ID:
+                record.avctp_version = (
+                    proto.value[1].value >> 8,
+                    proto.value[1].value & 0xFF,
+                )
+          case sdp.SDP_BLUETOOTH_PROFILE_DESCRIPTOR_LIST_ATTRIBUTE_ID:
+            record.avrcp_version = (
+                attribute.value.value[0].value[1].value >> 8,
+                attribute.value.value[0].value[1].value & 0xFF,
+            )
+          case sdp.SDP_SUPPORTED_FEATURES_ATTRIBUTE_ID:
+            record.supported_features = avrcp.TargetFeatures(
+                attribute.value.value
+            )
+          case 0x000D:  # Additional Protocol Descriptor Lists
+            additional_protocol_descriptor_lists = attribute.value
+
+      if additional_protocol_descriptor_lists is not None:
+        for proto_list in additional_protocol_descriptor_lists.value:
+          has_l2cap = False
+          has_rfcomm = False
+          has_obex = False
+          has_avctp = False
+          temp_psm = None
+          temp_channel = None
+          for proto_desc in proto_list.value:
+            proto_uuid = proto_desc.value[0].value
+            if proto_uuid == core.BT_L2CAP_PROTOCOL_ID:
+              has_l2cap = True
+              if len(proto_desc.value) > 1:
+                temp_psm = proto_desc.value[1].value
+            elif proto_uuid == core.BT_RFCOMM_PROTOCOL_ID:
+              has_rfcomm = True
+              if len(proto_desc.value) > 1:
+                temp_channel = proto_desc.value[1].value
+            elif proto_uuid == core.BT_OBEX_PROTOCOL_ID:
+              has_obex = True
+            elif proto_uuid == core.BT_AVCTP_PROTOCOL_ID:
+              has_avctp = True
+
+          if has_l2cap and has_obex and temp_psm is not None:
+            record.bip_goep_l2cap_psm = temp_psm
+            if record.bip_version is None:
+              record.bip_version = (1, 0)
+          elif (
+              has_l2cap and has_rfcomm and has_obex and temp_channel is not None
+          ):
+            record.bip_goep_rfcomm_channel = temp_channel
+            if record.bip_version is None:
+              record.bip_version = (1, 0)
+          elif has_l2cap and has_avctp and temp_psm is not None:
+            record.browsing_psm = temp_psm
+
+      records.append(record)
+
+    return records
+
+
+class CoverArtClient(obex.ClientSession):
+  """AVRCP Cover Art BIP Client."""
+
+  # AVRCP 1.6 Section 5.14.2.1.
+  COVER_ART_UUID = core.UUID("7163dd54-4a7e-11e2-b47c-0050c2490048")
+
+  async def connect(self) -> None:
+    """Connect to the Cover Art OBEX Server."""
+    response = await self.send_request(
+        obex.ConnectRequest(
+            obex_version_number=obex.Version.V_1_0,
+            flags=0,
+            maximum_obex_packet_length=self.bearer.mtu,
+            headers=obex.Headers(target=self.COVER_ART_UUID.uuid_bytes[::-1]),
+            final=True,
+        )
+    )
+    assert isinstance(response, obex.ConnectResponse)
+    self.connection_id = response.headers.connection_id
+    if response.response_code != obex.ResponseCode.SUCCESS:
+      raise obex.Error(
+          response.response_code, "Failed to connect to Cover Art server"
+      )
+
+  async def _get_multi_packet(self, request: obex.Request) -> bytes:
+    body = b""
+    response = await self.send_request(request)
+    while response.response_code == obex.ResponseCode.CONTINUE:
+      chunk = response.headers.body or response.headers.end_of_body or b""
+      body += chunk
+
+      # Send next empty GET request
+      next_request = obex.Request(
+          opcode=obex.Opcode.GET,
+          final=True,
+          headers=obex.Headers(connection_id=self.connection_id),
+      )
+      response = await self.send_request(next_request)
+
+    if response.response_code != obex.ResponseCode.SUCCESS:
+      raise obex.Error(response.response_code, "GET failed")
+
+    chunk = response.headers.body or response.headers.end_of_body or b""
+    body += chunk
+    return body
+
+  async def get_image_properties(self, image_handle: str) -> bytes:
+    """Retrieve the properties of an image."""
+    request = obex.Request(
+        opcode=obex.Opcode.GET,
+        final=True,
+        headers=obex.Headers(
+            connection_id=self.connection_id,
+            img_handle=image_handle,
+            type=b"x-bt/img-properties\x00",
+        ),
+    )
+    return await self._get_multi_packet(request)
+
+  async def get_image(self, image_handle: str) -> bytes:
+    """Retrieve the image itself."""
+    request = obex.Request(
+        opcode=obex.Opcode.GET,
+        final=True,
+        headers=obex.Headers(
+            connection_id=self.connection_id,
+            img_handle=image_handle,
+            type=b"x-bt/img-img\x00",
+        ),
+    )
+    return await self._get_multi_packet(request)
+
+
+class CoverArtServerConnection(obex.ServerSession):
+  """AVRCP Cover Art Server connection."""
+
+  def __init__(
+      self,
+      bearer: obex.Bearer,
+      images: dict[str, bytes],
+  ) -> None:
+    self.images = images
+    self.connections = set[int]()
+    self.peer_max_packet_length = 255  # Default minimum
+    self._remaining_data = b""
+    super().__init__(bearer)
+
+  @override
+  def _on_connect(self, request: obex.ConnectRequest) -> None:
+    # Validate Target UUID
+    if request.headers.target != CoverArtClient.COVER_ART_UUID.uuid_bytes[::-1]:
+      logger.warning("onConnect - UUID didn't match. Not Acceptable")
+      self.send_response(
+          obex.Response(response_code=obex.ResponseCode.NOT_ACCEPTABLE)
+      )
+      return
+
+    connection_id = max(self.connections) + 1 if self.connections else 1
+    self.connections.add(connection_id)
+    self.peer_max_packet_length = request.maximum_obex_packet_length
+
+    response = obex.ConnectResponse(
+        response_code=obex.ResponseCode.SUCCESS,
+        obex_version_number=request.obex_version_number,
+        flags=request.flags,
+        maximum_obex_packet_length=self.bearer.mtu,
+        headers=obex.Headers(
+            connection_id=connection_id,
+            who=CoverArtClient.COVER_ART_UUID.uuid_bytes[::-1],
+        ),
+    )
+    self.send_response(response)
+
+  @override
+  def _on_disconnect(self, request: obex.Request) -> None:
+    if (
+        request.headers.connection_id is None
+        or request.headers.connection_id not in self.connections
+    ):
+      self.send_response(
+          obex.Response(response_code=obex.ResponseCode.NOT_FOUND)
+      )
+      return
+    self.connections.remove(request.headers.connection_id)
+    self.send_response(obex.Response(response_code=obex.ResponseCode.SUCCESS))
+
+  def _send_next_chunk(self) -> None:
+    # Calculate max chunk size, leaving some safety margin
+    max_chunk_size = self.peer_max_packet_length - 10
+
+    if len(self._remaining_data) <= max_chunk_size:
+      # This is the last chunk
+      chunk = self._remaining_data
+      self._remaining_data = b""
+      self.send_response(
+          obex.Response(
+              response_code=obex.ResponseCode.SUCCESS,
+              headers=obex.Headers(end_of_body=chunk),
+          )
+      )
+    else:
+      # More chunks to follow
+      chunk = self._remaining_data[:max_chunk_size]
+      self._remaining_data = self._remaining_data[max_chunk_size:]
+      self.send_response(
+          obex.Response(
+              response_code=obex.ResponseCode.CONTINUE,
+              headers=obex.Headers(body=chunk),
+          )
+      )
+
+  @override
+  def _on_get(self, request: obex.Request) -> None:
+    if (
+        request.headers.connection_id is None
+        or request.headers.connection_id not in self.connections
+    ):
+      self.send_response(
+          obex.Response(response_code=obex.ResponseCode.NOT_FOUND)
+      )
+      return
+
+    # Check request type
+    req_type = request.headers.type
+    img_handle = request.headers.img_handle
+
+    # If it is a subsequent GET request (no type, no handle)
+    if req_type is None and img_handle is None:
+      if self._remaining_data:
+        self._send_next_chunk()
+      else:
+        self.send_response(
+            obex.Response(response_code=obex.ResponseCode.BAD_REQUEST)
+        )
+      return
+
+    # Remove null terminator if present
+    if req_type and req_type.endswith(b"\x00"):
+      req_type = req_type[:-1]
+
+    if img_handle is None:
+      self.send_response(
+          obex.Response(response_code=obex.ResponseCode.BAD_REQUEST)
+      )
+      return
+
+    if img_handle not in self.images:
+      self.send_response(
+          obex.Response(response_code=obex.ResponseCode.NOT_FOUND)
+      )
+      return
+
+    if req_type == b"x-bt/img-properties":
+      # Return XML properties
+      properties_xml = (
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>\n'
+          f'<image-properties version="1.0" handle="{img_handle}">\n'
+          '  <native encoding="JPEG" pixel="200*200" />\n'
+          "</image-properties>\n"
+      ).encode("utf-8")
+      self._remaining_data = properties_xml
+      self._send_next_chunk()
+
+    elif req_type == b"x-bt/img-img":
+      image_bytes = self.images[img_handle]
+      self._remaining_data = image_bytes
+      self._send_next_chunk()
+
+    else:
+      self.send_response(
+          obex.Response(response_code=obex.ResponseCode.BAD_REQUEST)
+      )
+
+
+class CoverArtServer:
+  """AVRCP Cover Art BIP Server."""
+
+  def __init__(
+      self,
+      device: bumble_device.Device,
+      images: dict[str, bytes] | None = None,
+  ) -> None:
+    self.device = device
+    self.images = images or {}
+
+    self.l2cap_server = self.device.create_l2cap_server(
+        spec=l2cap.ClassicChannelSpec(
+            mode=l2cap.TransmissionMode.ENHANCED_RETRANSMISSION,
+            fcs_enabled=True,
+        ),
+        handler=self._on_connection,
+    )
+    self._pending_connections = asyncio.Queue[CoverArtServerConnection]()
+
+  def _on_connection(self, bearer: obex.Bearer) -> None:
+    connection = CoverArtServerConnection(bearer, self.images)
+    self._pending_connections.put_nowait(connection)
+
+  async def wait_connection(self) -> CoverArtServerConnection:
+    """Waits for a connection."""
+    return await self._pending_connections.get()

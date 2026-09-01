@@ -28,6 +28,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.os.OutcomeReceiver
+import android.os.ParcelUuid
 import android.provider.CallLog
 import android.provider.ContactsContract
 import android.provider.Telephony
@@ -49,8 +50,8 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.google.android.mobly.snippet.Snippet
 import com.google.android.mobly.snippet.rpc.AsyncRpc
 import com.google.android.mobly.snippet.rpc.Rpc
+import com.google.android.mobly.snippet.rpc.RpcOptional
 import com.google.wireless.android.pixel.bluetooth.snippet.Utils.postSnippetEvent
-import java.util.UUID
 import java.util.function.Consumer
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CompletableDeferred
@@ -139,15 +140,15 @@ class TelecomSnippet : Snippet {
    * Adds a new call with [callerName] and [callerAddress], and returns cookie of the new call. If
    * [isIncoming] is true, an incoming call will be placed, otherwise the new call is outgoing.
    */
-  @Rpc(description = "Add a call")
-  fun addCall(callerName: String, callerAddress: String, isIncoming: Boolean): String {
+  @AsyncRpc(description = "Add a call")
+  fun addCall(callbackId: String, callerName: String, callerAddress: String, isIncoming: Boolean) {
     val direction =
       if (isIncoming) {
         CallAttributes.DIRECTION_INCOMING
       } else {
         CallAttributes.DIRECTION_OUTGOING
       }
-    val cookie = UUID.randomUUID().toString()
+    val cookie = callbackId
 
     val callControlCallback =
       object : CallControlCallback {
@@ -193,6 +194,9 @@ class TelecomSnippet : Snippet {
 
         override fun onCallEndpointChanged(newCallEndpoint: CallEndpoint) {
           Log.i(TAG, "onCallEndpointChanged cookie=$cookie, endpoint=$newCallEndpoint")
+          postSnippetEvent(callbackId, SnippetConstants.CALL_ENDPOINT_CHANGED) {
+            putParcelable(SnippetConstants.FIELD_ENDPOINT, newCallEndpoint)
+          }
         }
 
         override fun onCallStreamingFailed(reason: Int) {
@@ -220,7 +224,6 @@ class TelecomSnippet : Snippet {
     try {
       val callControl = runBlocking { withTimeout(CALL_CONTROL_TIMEOUT) { deferred.await() } }
       callControls[cookie] = callControl
-      return cookie
     } catch (e: TimeoutCancellationException) {
       throw RuntimeException("Add call timeout after $CALL_CONTROL_TIMEOUT", e)
     }
@@ -257,13 +260,21 @@ class TelecomSnippet : Snippet {
   }
 
   @Rpc(description = "Get active call endpoint")
-  fun requestCallEndpointSwitch(cookie: String, callEndpointType: Int) {
+  fun requestCallEndpointSwitch(
+    cookie: String,
+    endpointType: Int? = null,
+    endpointIdentifier: String? = null,
+  ) {
+    val endpointIdentifierUuid = endpointIdentifier?.let { ParcelUuid.fromString(it) }
+    fun matchEndpoint(ep: CallEndpoint): Boolean {
+      return (endpointIdentifierUuid == null || ep.identifier == endpointIdentifierUuid) &&
+        (endpointType == null || ep.endpointType == endpointType)
+    }
     val endpoint = runBlocking {
       withTimeoutOrNull(CALL_CONTROL_TIMEOUT) {
-          availableCallEndpoints.first { it.any { ep -> ep.endpointType == callEndpointType } }
+          availableCallEndpoints.first { it.any { ep -> matchEndpoint(ep) } }
         }
-        ?.first { it.endpointType == callEndpointType }
-        ?: throw RuntimeException("No available call endpoints")
+        ?.firstOrNull { matchEndpoint(it) } ?: throw RuntimeException("No available call endpoints")
     }
 
     val deferred = DeferredOutcomeReceiver<Void?, CallException>()
@@ -275,6 +286,9 @@ class TelecomSnippet : Snippet {
       throw RuntimeException("Request call endpoint switch timeout after $CALL_CONTROL_TIMEOUT", e)
     }
   }
+
+  @Rpc(description = "Get available call endpoints")
+  fun getAvailableCallEndpoints(): List<CallEndpoint> = availableCallEndpoints.value
 
   /** Gets all registered calls. */
   @Rpc(description = "Get all calls") fun getCalls(): List<Call> = inCallService.calls
@@ -415,6 +429,65 @@ class TelecomSnippet : Snippet {
   @Rpc(description = "Notifies all observers that MMS SMS db is changed")
   fun notifyMmsSmsChange() {
     context.contentResolver.notifyChange(Telephony.MmsSms.CONTENT_URI, null)
+  }
+
+  @Rpc(description = "Disconnect all active calls.")
+  fun disconnectAllCalls() {
+    for (call in inCallService.calls) {
+      Log.i(TAG, "Disconnecting call: ${call.details.handle}")
+      call.disconnect()
+    }
+  }
+
+  /** Enables or disables a phone account using TelecomManager directly. */
+  @Rpc(description = "Enable or disable a phone account")
+  fun setPhoneAccountEnabled(
+    packageName: String,
+    className: String,
+    accountId: String,
+    enabled: Boolean,
+  ) {
+    val handle = PhoneAccountHandle(ComponentName(packageName, className), accountId)
+    telecomManager.enablePhoneAccount(handle, enabled)
+  }
+
+  /** Sets or clears user selected outgoing phone account using TelecomManager directly. */
+  @Rpc(description = "Set user selected outgoing phone account")
+  fun setUserSelectedOutgoingPhoneAccount(
+    @RpcOptional packageName: String? = null,
+    @RpcOptional className: String? = null,
+    @RpcOptional accountId: String? = null,
+  ) {
+    telecomManager.userSelectedOutgoingPhoneAccount =
+      if (packageName != null && className != null && accountId != null) {
+        PhoneAccountHandle(ComponentName(packageName, className), accountId)
+      } else {
+        null
+      }
+  }
+
+  /** Registers phone account for ConnectionService. */
+  @Rpc(description = "Register phone account for a ConnectionService")
+  fun registerPhoneAccount(
+    packageName: String,
+    className: String,
+    accountId: String,
+    accountLabel: String,
+  ) {
+    val phoneAccountHandle = PhoneAccountHandle(ComponentName(packageName, className), accountId)
+    val phoneAccount =
+      PhoneAccount.builder(phoneAccountHandle, accountLabel)
+        .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
+        .addSupportedUriScheme(PhoneAccount.SCHEME_TEL)
+        .build()
+    telecomManager.registerPhoneAccount(phoneAccount)
+  }
+
+  /** Unregisters phone account for ConnectionService. */
+  @Rpc(description = "Unregister phone account for a ConnectionService")
+  fun unregisterPhoneAccount(packageName: String, className: String, accountId: String) {
+    val phoneAccountHandle = PhoneAccountHandle(ComponentName(packageName, className), accountId)
+    telecomManager.unregisterPhoneAccount(phoneAccountHandle)
   }
 
   private fun broadcastCallStateChangedEvent(name: String, handle: String, state: Int) {

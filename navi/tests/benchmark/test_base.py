@@ -19,6 +19,7 @@ from navi.tests import navi_test_base
 
 class PerformanceTestBase(navi_test_base.TwoDevicesTestBase):
   """Base class for performance tests."""
+  TEST_TIMEOUT_SECONDS = 600.0
 
   def success_attempt_record(self, test_round: int, latency: float,
                              latency_list: list[float]) -> None:
@@ -62,4 +63,3 @@ class PerformanceTestBase(navi_test_base.TwoDevicesTestBase):
             },
         )
     )
-

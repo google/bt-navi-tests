@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import enum
 
-
 PACKAGE_NAME_BLUETOOTH_SNIPPET = (
     "com.google.wireless.android.pixel.bluetooth.snippet"
 )
@@ -88,6 +87,7 @@ class Property(enum.StrEnum):
   RFCOMM_SYSPROXY_RX_EXIT_SNIFF = "bluetooth.rfcomm.sysproxy.rx.exit_sniff"
   # A2DP Source.
   A2DP_SOURCE_OPUS_ENABLED = "persist.bluetooth.opus.enabled"
+  A2DP_CODEC_EXTENSIBILITY = "persist.vendor.audio.a2dp_codec_extensibility"
 
 
 class Transport(enum.IntEnum):
@@ -234,6 +234,20 @@ class A2dpCodecType(enum.IntEnum):
   LC3 = 5
   OPUS = 6
   INVALID = 1000 * 1000
+
+
+class BluetoothCodecId(enum.IntEnum):
+  """android.bluetooth.BluetoothCodecType.CODEC_ID_*."""
+
+  SBC = 0x0000000000
+  AAC = 0x0000000002
+  APTX = 0x0001004FFF
+  APTX_HD = 0x002400D7FF
+  # Note: There is a deprecated codec "LDAC" replaced with SONY_LDAC. For
+  # simplicity, we use the value of SONY_LDAC with the name LDAC.
+  LDAC = 0x00AA_012D_FF
+  OPUS = 0x000100E0FF
+  LHDC_V5 = 0x4C35_053A_FF
 
 
 class A2dpSampleRate(enum.IntFlag):
@@ -1011,6 +1025,13 @@ class BluetoothStatusCode(enum.IntEnum):
   RFCOMM_LISTENER_FAILED_TO_CLOSE_SERVER_SOCKET = 2004
   RFCOMM_LISTENER_NO_SOCKET_AVAILABLE = 2005
   ERROR_NOT_DUAL_MODE_AUDIO_DEVICE = 3000
+  ERROR_TAK_UNAVAILABLE_NOT_CONNECTED = 4000
+  ERROR_TAK_UNAVAILABLE_BONDED = 4001
+  ERROR_TAK_UNAVAILABLE_ALREADY_STARTED = 4002
+  ERROR_TAK_UNAVAILABLE_ALREADY_COMPLETE = 4003
+  ERROR_TAK_UNAVAILABLE_USED_BY_OTHER_APP = 4004
+  ERROR_TAK_UNAVAILABLE_PAIRING_IN_PROGRESS = 4005
+  ERROR_TAK_ENCRYPTION_FAILED = 4006
   ERROR_UNKNOWN = 2147483647
 
 
@@ -1019,6 +1040,24 @@ class AudioDeviceRole(enum.IntEnum):
 
   INPUT = 1
   OUTPUT = 2
+
+
+class AudioMode(enum.IntEnum):
+  """android.media.AudioManager.MODE_*.
+
+  Internal: android.media.AudioSystem.MODE_*.
+  """
+
+  INVALID = -2
+  CURRENT = -1
+  NORMAL = 0
+  RINGTONE = 1
+  IN_CALL = 2
+  IN_COMMUNICATION = 3
+  CALL_SCREENING = 4
+  CALL_REDIRECT = 5
+  COMMUNICATION_REDIRECT = 6
+  ASSISTANT_CONVERSATION = 7
 
 
 class MediaPlaybackState(enum.IntEnum):
@@ -1045,3 +1084,22 @@ class BluetoothSocketType(enum.IntEnum):
   SCO = 2
   L2CAP = 3
   LE = 4
+
+
+class HidHostProtocolMode(enum.IntEnum):
+  """android.bluetooth.BluetoothHidHost.PROTOCOL*.
+
+  Note: The values are different from the values in the Bluetooth HID spec.
+  """
+
+  REPORT = 0
+  BOOT = 1
+
+
+class TakState(enum.IntEnum):
+  """android.bluetooth.TakCallback.TakState."""
+
+  NONE = 0
+  ENCRYPTING = 1
+  WAITING = 2
+  ENCRYPTED = 3

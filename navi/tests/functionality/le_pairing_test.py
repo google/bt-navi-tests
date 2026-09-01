@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+import copy
 import enum
 import itertools
 from typing import Any
-import uuid
 
 from bumble import core
 from bumble import device
@@ -112,54 +112,14 @@ class LePairingTest(navi_test_base.TwoDevicesTestBase):
       await self.ref.device.stop_advertising()
       return ref_dut_connection
 
-  @retry.retry_on_exception()
   async def _make_incoming_connection(
       self, ref_connection_address_type: _AddressType
   ) -> device.Connection:
-    # Generate a random UUID for testing.
-    service_uuid = str(uuid.uuid4())
-
-    self.logger.info(
-        '[DUT] Start advertising with service UUID %s.', service_uuid
+    return await self.connect_le_from_ref(
+        dut_address_type=android_constants.AddressTypeStatus.RANDOM,
+        ref_address_type=ref_connection_address_type,
+        wait_for_dut_connected=False,
     )
-    advertise = await self.dut.bl4a.start_legacy_advertiser(
-        settings=bl4a_api.LegacyAdvertiseSettings(
-            own_address_type=_AddressType.RANDOM
-        ),
-        advertising_data=bl4a_api.AdvertisingData(service_uuids=[service_uuid]),
-    )
-
-    self.logger.info('[REF] Scan for DUT.')
-    scan_result = asyncio.get_running_loop().create_future()
-    with advertise, pyee_extensions.EventWatcher() as watcher:
-
-      def on_advertising_report(adv: device.Advertisement) -> None:
-        if service_uuids := adv.data.get(
-            core.AdvertisingData.Type.COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS
-        ):
-          if service_uuid in service_uuids and not scan_result.done():
-            scan_result.set_result(adv.address)
-
-      watcher.on(self.ref.device, 'advertisement', on_advertising_report)
-      await self.ref.device.start_scanning()
-      self.logger.info(
-          '[REF] Wait for advertising report(scan result) from DUT.'
-      )
-      async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
-        dut_addr = await scan_result
-      await self.ref.device.stop_scanning()
-
-      self.logger.info('[REF] Connect to DUT.')
-      ref_dut_connection = await self.ref.device.connect(
-          dut_addr,
-          transport=core.BT_LE_TRANSPORT,
-          own_address_type=ref_connection_address_type,
-      )
-      # Remote may not receive CONNECT_IND, so we need to send something to make
-      # sure connection is established correctly.
-      await ref_dut_connection.get_remote_le_features()
-
-    return ref_dut_connection
 
   @navi_test_base.parameterized(*(
       (
@@ -611,7 +571,7 @@ class LePairingTest(navi_test_base.TwoDevicesTestBase):
         await ref_dut.disconnect()
       case TestVariant.REJECTED:
         smp_session = self.ref.device.smp_manager.sessions[ref_dut.handle]
-        smp_session.send_pairing_failed(smp.ErrorCode.UNSPECIFIED_REASON)  # pytype: disable=wrong-arg-types
+        smp_session.send_pairing_failed(smp.ErrorCode.UNSPECIFIED_REASON)
 
     self.logger.info('[DUT] Check final state.')
     expect_state = (
@@ -1002,6 +962,301 @@ class LePairingTest(navi_test_base.TwoDevicesTestBase):
         android_constants.BondState.BONDED,
         'Bond state should be BONDED after pairing',
     )
+
+  async def test_le_no_bonding_pairing_does_not_delete_existing_bond(
+      self,
+  ) -> None:
+    """Tests LE No Bonding pairing request doesn't delete existing bond.
+
+    Test steps:
+      1. Bond DUT and REF over BR/EDR (without CTKD).
+      2. Establish LE connection.
+      3. Trigger LE pairing request with AuthReq: No Bonding (bonding=False)
+         from REF.
+      4. Accept pairing request on DUT.
+      5. Verify the bond remains present on DUT (does not transition to
+         BOND_NONE).
+      6. Restart Bluetooth on DUT.
+      7. Verify the bond is still present.
+      8. Reconnect and verify the link is encrypted.
+    """
+    self.logger.info('Step 1: Bond DUT and REF over BR/EDR (without CTKD).')
+    # Disable SMP over Classic to prevent CTKD
+    self.ref.device.l2cap_channel_manager.deregister_fixed_channel(
+        smp.SMP_BR_CID
+    )
+    await self.classic_connect_and_pair()
+    self.assertIn(self.ref.address, self.dut.bt.getBondedDevices())
+    keystore = copy.deepcopy(self.ref.device.keystore)
+
+    self.logger.info('Step 2: Establish LE connection.')
+    ref_conn = await self._make_outgoing_connection(
+        hci.OwnAddressType.PUBLIC, create_bond=False
+    )
+
+    # Register adapter callback to monitor bond state changes
+    dut_cb = self.dut.bl4a.register_callback(bl4a_api.Module.ADAPTER)
+    self.test_case_context.push(dut_cb)
+
+    self.logger.info(
+        'Step 3 & 4: Trigger LE pairing request with AuthReq: No Bonding from'
+        ' REF and accept on DUT.'
+    )
+    await self._le_pair_no_bonding(ref_conn, dut_cb)
+
+    self.logger.info('Step 5: Verify the bond remains present on DUT.')
+    self.logger.info('[DUT] Wait for bond state to settle.')
+    terminal_bond_event = await dut_cb.wait_for_event(
+        bl4a_api.BondStateChanged(
+            address=self.ref.address,
+            state=matcher.any_of(*_TERMINATED_BOND_STATES),
+        ),
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
+    self.assertEqual(
+        terminal_bond_event.state,
+        android_constants.BondState.BONDED,
+        'Bond was deleted or got stuck in bonding.',
+    )
+
+    self.logger.info('Step 6: Restart Bluetooth on DUT.')
+    self.dut.bt.disable()
+    self.dut.bt.waitForAdapterState(android_constants.AdapterState.OFF)
+    self.dut.bt.enable()
+    self.dut.bt.waitForAdapterState(android_constants.AdapterState.ON)
+
+    self.logger.info('Step 7: Verify the bond is still present.')
+    self.assertIn(self.ref.address, self.dut.bt.getBondedDevices())
+
+    self.logger.info('Step 8: Reconnect and verify the link is encrypted.')
+    # Workaround: Restore keystore - LTK might be overwritten on LE pairing.
+    self.ref.device.keystore = keystore
+    self.logger.info('[REF] Reconnect BR/EDR to DUT.')
+    ref_classic_conn = await self.ref.device.connect(
+        self.dut.address,
+        transport=core.BT_BR_EDR_TRANSPORT,
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
+
+    async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+      self.logger.info('[REF] Trigger authentication.')
+      await ref_classic_conn.authenticate()
+      self.logger.info('[REF] Trigger encryption.')
+      await ref_classic_conn.encrypt()
+
+    self.logger.info('[DUT] Wait for encryption changed.')
+    await dut_cb.wait_for_event(
+        bl4a_api.EncryptionChanged(
+            address=self.ref.address,
+            transport=android_constants.Transport.CLASSIC,
+        ),
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
+    self.assertTrue(ref_classic_conn.is_encrypted)
+
+  async def _le_pair_no_bonding(
+      self, ref_conn: device.Connection, dut_cb: bl4a_api.CallbackHandler
+  ) -> None:
+    # Configure Bumble to not bond
+    pairing_delegate = pairing_utils.PairingDelegate(
+        auto_accept=True,
+        io_capability=pairing.PairingDelegate.IoCapability.NO_OUTPUT_NO_INPUT,
+    )
+
+    def pairing_config_factory(_: device.Connection) -> pairing.PairingConfig:
+      return pairing.PairingConfig(
+          sc=True,
+          mitm=False,
+          bonding=False,  # Crucial: No Bonding
+          delegate=pairing_delegate,
+      )
+
+    self.ref.device.pairing_config_factory = pairing_config_factory
+
+    ref_pairing_future = asyncio.get_running_loop().create_future()
+
+    @ref_conn.on(ref_conn.EVENT_PAIRING)
+    def on_pairing(*args):
+      del args
+      self.logger.info('[REF] Pairing complete event received on Bumble.')
+      ref_pairing_future.set_result(True)
+
+    @ref_conn.on(ref_conn.EVENT_PAIRING_FAILURE)
+    def on_pairing_failure(reason):
+      self.logger.error(
+          '[REF] Pairing failed event received on Bumble. Reason: %s', reason
+      )
+      ref_pairing_future.set_exception(
+          AssertionError(f'Pairing failed on Bumble: {reason}')
+      )
+
+    self.logger.info('[REF] Request LE pairing (No Bonding).')
+    ref_conn.request_pairing()
+
+    self.logger.info('[DUT] Wait for 1st pairing request.')
+    dut_pairing_event = await dut_cb.wait_for_event(
+        bl4a_api.PairingRequest(
+            address=self.ref.address,
+            variant=matcher.ANY,
+            pin=matcher.ANY,
+        ),
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
+    self.assertEqual(
+        dut_pairing_event.variant, android_constants.PairingVariant.CONSENT
+    )
+
+    self.logger.info('[DUT] Provide initial pairing confirmation.')
+    self.dut.bt.setPairingConfirmation(self.ref.address, True)
+
+    self.logger.info('[DUT] Wait for 2nd pairing request.')
+    dut_pairing_event2 = await dut_cb.wait_for_event(
+        bl4a_api.PairingRequest(
+            address=self.ref.address,
+            variant=matcher.ANY,
+            pin=matcher.ANY,
+        ),
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
+    self.assertEqual(
+        dut_pairing_event2.variant, android_constants.PairingVariant.CONSENT
+    )
+
+    self.logger.info('[REF] Wait for pairing event on Bumble.')
+    ref_pairing_event = await asyncio.wait_for(
+        pairing_delegate.pairing_events.get(),
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
+    self.assertEqual(
+        ref_pairing_event.variant, pairing_utils.PairingVariant.JUST_WORK
+    )
+
+    self.logger.info('[DUT] Accept 2nd pairing.')
+    self.dut.bt.setPairingConfirmation(self.ref.address, True)
+
+    self.logger.info('[REF] Accept pairing.')
+    pairing_delegate.pairing_answers.put_nowait(True)
+
+    self.logger.info('[REF] Wait for pairing to complete.')
+    async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+      await ref_pairing_future
+
+  async def test_security_request_mitm_bit_after_unauthenticated_bonding(
+      self,
+  ) -> None:
+    """Tests that SMP Security Request does not have MITM bit set after unauthenticated bonding.
+
+    This test verifies that after an unauthenticated LE bond, a subsequent
+    Security Request from the DUT does not have the MITM bit set. If the DUT
+    requests MITM protection when the existing bond is unauthenticated, it
+    forces the peer to initiate re-pairing with MITM (e.g., Numeric Comparison),
+    which may fail on headless devices or devices without UI.
+
+    See b/500882769 for more details.
+    """
+    # 1. Bond DUT and REF using unauthenticated SMP pairing (Just Works)
+    pairing_delegate = pairing_utils.PairingDelegate(
+        auto_accept=True,
+        io_capability=pairing.PairingDelegate.IoCapability.NO_OUTPUT_NO_INPUT,
+    )
+
+    def pairing_config_factory(
+        connection: device.Connection,
+    ) -> pairing.PairingConfig:
+      del connection
+      return pairing.PairingConfig(
+          sc=True,
+          mitm=False,  # Unauthenticated
+          bonding=True,
+          delegate=pairing_delegate,
+      )
+
+    self.ref.device.pairing_config_factory = pairing_config_factory
+
+    dut_cb = self.dut.bl4a.register_callback(bl4a_api.Module.ADAPTER)
+    self.test_case_context.push(dut_cb)
+
+    self.logger.info('[DUT] Start pairing.')
+    ref_dut_acl = await self._make_outgoing_connection(
+        _AddressType.PUBLIC, create_bond=True
+    )
+
+    self.logger.info('[DUT] Wait for pairing request.')
+    dut_pairing_event = await dut_cb.wait_for_event(
+        bl4a_api.PairingRequest(
+            address=self.ref.address,
+            variant=matcher.ANY,
+            pin=matcher.ANY,
+        ),
+        timeout=_DEFAULT_SETUP_TIMEOUT_SECONDS,
+    )
+    self.assertEqual(dut_pairing_event.variant, _AndroidPairingVariant.CONSENT)
+
+    self.logger.info('[DUT] Provide pairing confirmation.')
+    self.dut.bt.setPairingConfirmation(self.ref.address, True)
+
+    self.logger.info('[REF] Wait for pairing event on Bumble.')
+    await asyncio.wait_for(
+        pairing_delegate.pairing_events.get(),
+        timeout=_DEFAULT_SETUP_TIMEOUT_SECONDS,
+    )
+    self.logger.info('[REF] Provide pairing confirmation.')
+    pairing_delegate.pairing_answers.put_nowait(True)
+
+    self.logger.info('[DUT] Wait for bond state changed to BONDED.')
+    bond_state_changed_event = await dut_cb.wait_for_event(
+        bl4a_api.BondStateChanged(
+            address=self.ref.address,
+            state=matcher.any_of(*_TERMINATED_BOND_STATES),
+        ),
+        timeout=_DEFAULT_SETUP_TIMEOUT_SECONDS,
+    )
+    self.assertEqual(
+        bond_state_changed_event.state, android_constants.BondState.BONDED
+    )
+
+    # 2. Disconnect
+    self.logger.info('[REF] Disconnect.')
+    async with self.assert_not_timeout(_DEFAULT_SETUP_TIMEOUT_SECONDS):
+      await ref_dut_acl.disconnect()
+
+    self.logger.info('[DUT] Wait for ACL disconnected.')
+    await dut_cb.wait_for_event(
+        bl4a_api.AclDisconnected(
+            address=self.ref.address,
+            transport=android_constants.Transport.LE,
+        ),
+        timeout=_DEFAULT_SETUP_TIMEOUT_SECONDS,
+    )
+
+    # 3. REF connects to DUT in LE central role
+    security_request_future: asyncio.Future[smp.AuthReq] = (
+        asyncio.get_running_loop().create_future()
+    )
+
+    @self.ref.device.on(self.ref.device.EVENT_CONNECTION)
+    def on_connection(connection: device.Connection) -> None:
+      self.logger.info('[REF] New connection established.')
+
+      @connection.on(connection.EVENT_SECURITY_REQUEST)
+      def on_security_request(auth_req: smp.AuthReq) -> None:
+        self.logger.info(
+            '[REF] Received Security Request with auth_req: %r', auth_req
+        )
+        if not security_request_future.done():
+          security_request_future.set_result(auth_req)
+
+    self.logger.info('[REF] Connect to DUT (incoming to DUT).')
+    await self._make_incoming_connection(_AddressType.PUBLIC)
+
+    # 4. Expect DUT to send Security Request, and verify MITM bit is NOT set.
+    self.logger.info('[REF] Wait for Security Request.')
+    async with self.assert_not_timeout(_DEFAULT_SETUP_TIMEOUT_SECONDS):
+      auth_req = await security_request_future
+
+    # Verify MITM bit is NOT set
+    self.logger.info('Verifying MITM bit in Security Request.')
+    self.assertNotIn(smp.AuthReq.MITM, auth_req, 'MITM bit should NOT be set')
 
 
 if __name__ == '__main__':

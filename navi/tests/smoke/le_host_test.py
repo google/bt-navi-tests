@@ -23,6 +23,7 @@ from bumble import data_types
 from bumble import device
 from bumble import gatt
 from bumble import hci
+from bumble import keys
 from mobly import test_runner
 
 from navi.tests import navi_test_base
@@ -36,6 +37,8 @@ from navi.utils import retry
 _DEFAULT_TIMEOUT_SECONDS = 15.0
 _MIN_ADVERTISING_INTERVAL_MS = 20
 _DISCOVERY_TIMEOUT_SECONDS = 12.0
+_TAK_KEY = bytes([0x12] * 16)
+_TAK_SERVICE_UUID = "01234567-89ab-cdef-0123-456789abcdef"
 
 _OwnAddressType = hci.OwnAddressType
 _AdvertisingData = core.AdvertisingData
@@ -120,29 +123,13 @@ class LeHostTest(navi_test_base.TwoDevicesTestBase):
       4. Disconnect DUT from REF.
     """
 
-    # [DUT] Start advertising with Public address.
-    await self.dut.bl4a.start_legacy_advertiser(
-        bl4a_api.LegacyAdvertiseSettings(
-            own_address_type=_OwnAddressType.PUBLIC
-        ),
+    ref_dut_acl = await self.connect_le_from_ref(
+        dut_address_type=android_constants.AddressTypeStatus.PUBLIC,
+        ref_address_type=_OwnAddressType.PUBLIC,
+        timeout=_DEFAULT_TIMEOUT_SECONDS,
     )
 
     with self.dut.bl4a.register_callback(bl4a_api.Module.ADAPTER) as dut_cb:
-      # [REF] Connect GATT.
-      ref_dut_acl = await self.ref.device.connect(
-          f"{self.dut.address}/P",
-          core.BT_LE_TRANSPORT,
-          own_address_type=_OwnAddressType.PUBLIC,
-      )
-      await ref_dut_acl.get_remote_le_features()
-
-      # [DUT] Wait for LE-ACL connected.
-      await dut_cb.wait_for_event(
-          event=bl4a_api.AclConnected(
-              address=self.ref.address, transport=android_constants.Transport.LE
-          ),
-      )
-
       # [REF] Disconnect.
       await ref_dut_acl.disconnect()
       # [DUT] Wait for LE-ACL disconnected.
@@ -197,9 +184,7 @@ class LeHostTest(navi_test_base.TwoDevicesTestBase):
       case _AdvertisingVariant.LEGACY_CCCDK_SERVICE_UUID_AND_DATA:
         advertising_data = bytes(
             core.AdvertisingData([
-                data_types.CompleteListOf16BitServiceUUIDs(
-                    [core.UUID("FFF5")]
-                ),
+                data_types.CompleteListOf16BitServiceUUIDs([core.UUID("FFF5")]),
                 data_types.ServiceData128BitUUID(
                     core.UUID("5810bbc0-b499-11e9-a2a3-2a2ae2dbcce4"),
                     bytes.fromhex("01") + bytes.fromhex("0002"),
@@ -468,12 +453,12 @@ class LeHostTest(navi_test_base.TwoDevicesTestBase):
       )
       self.logger.info("[REF] Wait for periodic advertisement.")
       periodic_advertisement = await periodic_advertisements.get()
-      if not periodic_advertisement.data:  # pytype: disable=attribute-error
+      if not periodic_advertisement.data:
         self.fail("Periodic advertisement data is empty.")
       # Check that the periodic advertisement data contains the service UUID
       # from the periodic advertising data.
       self.assertEqual(
-          periodic_advertisement.data.get(  # pytype: disable=attribute-error
+          periodic_advertisement.data.get(
               _AdvertisingData.Type.COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS
           ),
           [service_uuid_2],
@@ -633,7 +618,7 @@ class LeHostTest(navi_test_base.TwoDevicesTestBase):
     self.logger.info("[REF] Start advertising")
     await self.ref.device.start_advertising(
         own_address_type=hci.OwnAddressType.RANDOM,
-        advertising_type=device.AdvertisingType.UNDIRECTED_CONNECTABLE_SCANNABLE
+        advertising_type=device.AdvertisingType.UNDIRECTED_CONNECTABLE_SCANNABLE,
     )
     self.logger.info("[DUT] Connect GATT client to REF")
     gatt_client = await self.dut.bl4a.connect_gatt_client(
@@ -831,7 +816,6 @@ class LeHostTest(navi_test_base.TwoDevicesTestBase):
         android_constants.LeSubrateMode.LOW,
         android_constants.LeSubrateMode.BALANCED,
         android_constants.LeSubrateMode.HIGH,
-        android_constants.LeSubrateMode.OFF,
     ]:
       self.logger.info("[DUT] Request subrate mode to %s.", mode.name)
       subrate_mode = await gatt_client.request_subrate_mode(mode)
@@ -839,6 +823,15 @@ class LeHostTest(navi_test_base.TwoDevicesTestBase):
           subrate_mode,
           mode,
           f"Subrate mode is not changed to {mode.name}.",
+      )
+      self.logger.info("[DUT] Rollback subrate mode to off.")
+      subrate_mode = await gatt_client.request_subrate_mode(
+          android_constants.LeSubrateMode.OFF
+      )
+      self.assertEqual(
+          subrate_mode,
+          android_constants.LeSubrateMode.OFF,
+          "Subrate mode is not rolled back.",
       )
 
     gatt_client.close()
@@ -1084,9 +1077,7 @@ class LeHostTest(navi_test_base.TwoDevicesTestBase):
       self.skipTest("DUT does not support LE subrating.")
 
     self.logger.info("[DUT] Request subrate mode to low.")
-    subrate_mode = await gatt_client.request_subrate_mode(
-        subrate_mode_to_set
-    )
+    subrate_mode = await gatt_client.request_subrate_mode(subrate_mode_to_set)
 
     self.assertEqual(
         subrate_mode,
@@ -1187,6 +1178,246 @@ class LeHostTest(navi_test_base.TwoDevicesTestBase):
           self.ref.random_address,
           "MATCH_LOST scan result is not correct",
       )
+
+  def _require_tak_support(self) -> None:
+    """Verifies that DUT supports TAK (requires SDK 37.1 / 26Q4)."""
+    # TAK requires SDK 37.1 (26Q4 /  CINNAMON_BUN_1 = 3700001)
+    if self.dut.bt.getFullSdkVersion() < 3700001:
+      self.skipTest("DUT does not support this feature in this SDK version.")
+
+  async def _establish_le_acl_connection(
+      self, is_ref_central: bool
+  ) -> device.Connection:
+    """Establishes an LE ACL connection between DUT and REF.
+
+    Args:
+      is_ref_central: If True, REF is Central and DUT is Peripheral. If False,
+        DUT is Central and REF is Peripheral.
+
+    Returns:
+      The Bumble Connection instance on REF.
+    """
+    if is_ref_central:
+      return await self.connect_le_from_ref(
+          dut_address_type=android_constants.AddressTypeStatus.PUBLIC,
+          ref_address_type=hci.OwnAddressType.RANDOM,
+          timeout=_DEFAULT_TIMEOUT_SECONDS,
+      )
+    else:
+      with self.dut.bl4a.register_callback(
+          bl4a_api.Module.ADAPTER
+      ) as adapter_cb:
+        self.logger.info("[REF] Start advertising.")
+        await self.ref.device.start_advertising(
+            own_address_type=hci.OwnAddressType.RANDOM
+        )
+
+        self.logger.info("[DUT] Connect to REF as Central.")
+        gatt_client = await self.dut.bl4a.connect_gatt_client(
+            address=self.ref.random_address,
+            address_type=android_constants.AddressTypeStatus.RANDOM,
+            transport=android_constants.Transport.LE,
+        )
+        self.test_case_context.push(gatt_client)
+
+        await adapter_cb.wait_for_event(
+            event=bl4a_api.AclConnected(
+                address=self.ref.random_address,
+                transport=android_constants.Transport.LE,
+            )
+        )
+
+        le_connections = [
+            c
+            for c in self.ref.device.connections.values()
+            if c.transport == core.PhysicalTransport.LE
+        ]
+        if not le_connections:
+          self.fail("Failed to find ACL connection between DUT and REF.")
+        ref_connection = le_connections[-1]
+
+        await self.ref.device.stop_advertising()
+        return ref_connection
+
+  async def _start_tak_session_and_wait(
+      self,
+      key: bytes,
+      service_uuid: str,
+      is_ref_central: bool,
+  ) -> bl4a_api.TakSession:
+    """Starts a TAK session on DUT and waits for the initial state transition.
+
+    Args:
+      key: The 16-byte TAK key.
+      service_uuid: The TAK service UUID string.
+      is_ref_central: If True, DUT is Peripheral (expects TAK_STATE_WAITING). If
+        False, DUT is Central (expects TAK_STATE_ENCRYPTING).
+
+    Returns:
+      The active bl4a_api.TakSession instance.
+    """
+    role_name = "Peripheral" if is_ref_central else "Central"
+    self.logger.info("Calling startTakSession on DUT (%s)", role_name)
+    tak_session = self.test_case_context.enter_context(
+        self.dut.bl4a.start_tak_session(
+            self.ref.random_address, key, service_uuid
+        )
+    )
+    expected_state = (
+        android_constants.TakState.WAITING
+        if is_ref_central
+        else android_constants.TakState.ENCRYPTING
+    )
+    await tak_session.wait_for_event(
+        event=bl4a_api.TakStateChanged(
+            device=self.ref.random_address,
+            state=expected_state,
+            uuid=service_uuid,
+            status=android_constants.BluetoothStatusCode.SUCCESS,
+        )
+    )
+    return tak_session
+
+  @navi_test_base.named_parameterized(
+      ("outgoing", False),
+      ("incoming", True),
+  )
+  async def test_tak_setup(self, is_ref_central: bool) -> None:
+    """Verify TAK encrypted session setup.
+
+    Args:
+      is_ref_central: If True, REF is Central (incoming to DUT). If False, DUT
+        is Central (outgoing from DUT).
+    """
+    self._require_tak_support()
+
+    ref_connection = await self._establish_le_acl_connection(is_ref_central)
+
+    # Unconditionally inject TAK as LTK to keystore so we can use
+    # ref_connection.encrypt()
+    pairing_keys = keys.PairingKeys()
+    pairing_keys.ltk = keys.PairingKeys.Key(
+        value=_TAK_KEY,
+        rand=b"\x00" * 8,
+        ediv=0,
+    )
+
+    if self.ref.device.keystore is None:
+      self.ref.device.keystore = keys.MemoryKeyStore()
+
+    await self.ref.device.update_keys(
+        str(ref_connection.peer_address),
+        pairing_keys,
+    )
+
+    tak_session = await self._start_tak_session_and_wait(
+        _TAK_KEY, _TAK_SERVICE_UUID, is_ref_central
+    )
+    if is_ref_central:
+      # Let Bumble handle the LL command and encryption events via its
+      # keystore
+      async with self.assert_not_timeout(
+          _DEFAULT_TIMEOUT_SECONDS, msg="Wait for REF encryption_change"
+      ):
+        await ref_connection.encrypt()
+
+    await tak_session.wait_for_event(
+        event=bl4a_api.TakStateChanged(
+            device=self.ref.random_address,
+            state=android_constants.TakState.ENCRYPTED,
+            uuid=_TAK_SERVICE_UUID,
+            status=android_constants.BluetoothStatusCode.SUCCESS,
+        )
+    )
+    self.logger.info("DUT successfully reached ENCRYPTED state.")
+
+  async def test_tak_timeout_incoming_no_central_request(self) -> None:
+    """Verify that if the local Peripheral device receives no encryption request from Central, the session times out."""
+    self._require_tak_support()
+
+    await self._establish_le_acl_connection(is_ref_central=True)
+
+    tak_session = await self._start_tak_session_and_wait(
+        _TAK_KEY, _TAK_SERVICE_UUID, is_ref_central=True
+    )
+    # Remote device does NOT initiate encryption.
+    # Local Peripheral waits for timeout (2-3 seconds) and should receive
+    # ERROR_TAK_ENCRYPTION_FAILED.
+    await tak_session.wait_for_event(
+        event=bl4a_api.TakStateChanged(
+            device=self.ref.random_address,
+            state=android_constants.TakState.NONE,
+            uuid=_TAK_SERVICE_UUID,
+            status=android_constants.BluetoothStatusCode.ERROR_TAK_ENCRYPTION_FAILED,
+        )
+    )
+    self.logger.info(
+        "DUT successfully timed out and received ERROR_TAK_ENCRYPTION_FAILED."
+    )
+
+  @navi_test_base.named_parameterized(
+      ("outgoing", False),
+      ("incoming", True),
+  )
+  async def test_tak_key_mismatch(self, is_ref_central: bool) -> None:
+    """Verify that a mismatch between local and remote TAK keys results in encryption failure.
+
+    Args:
+      is_ref_central: If True, REF is Central (incoming to DUT). If False, DUT
+        is Central (outgoing from DUT).
+    """
+    self._require_tak_support()
+
+    if is_ref_central and self.dut.device.is_emulator:
+      self.skipTest(
+          "Rootcanal doesn't support LE peripheral key mismatch verification"
+          " yet."
+      )
+
+    ref_connection = await self._establish_le_acl_connection(is_ref_central)
+
+    # Mismatched TAK keys: DUT uses Key A (0x11), REF uses Key B (0x22)
+    dut_tak_key = bytes([0x11] * 16)
+    ref_tak_key = bytes([0x22] * 16)
+
+    # Configure REF keystore with ref_tak_key
+    pairing_keys = keys.PairingKeys()
+    pairing_keys.ltk = keys.PairingKeys.Key(
+        value=ref_tak_key,
+        rand=b"\x00" * 8,
+        ediv=0,
+    )
+
+    if self.ref.device.keystore is None:
+      self.ref.device.keystore = keys.MemoryKeyStore()
+
+    await self.ref.device.update_keys(
+        str(ref_connection.peer_address),
+        pairing_keys,
+    )
+
+    tak_session = await self._start_tak_session_and_wait(
+        dut_tak_key, _TAK_SERVICE_UUID, is_ref_central
+    )
+    if is_ref_central:
+      # REF (Central) initiates encryption with mismatched key
+      self.logger.info("[REF] Initiating encryption with mismatched key")
+      with contextlib.suppress(core.ProtocolError, hci.HCI_Error):
+        await ref_connection.encrypt()
+
+    # DUT callback receives ERROR_TAK_ENCRYPTION_FAILED
+    await tak_session.wait_for_event(
+        event=bl4a_api.TakStateChanged(
+            device=self.ref.random_address,
+            state=android_constants.TakState.NONE,
+            uuid=_TAK_SERVICE_UUID,
+            status=android_constants.BluetoothStatusCode.ERROR_TAK_ENCRYPTION_FAILED,
+        )
+    )
+    self.logger.info(
+        "DUT successfully received ERROR_TAK_ENCRYPTION_FAILED for key"
+        " mismatch."
+    )
 
 
 if __name__ == "__main__":

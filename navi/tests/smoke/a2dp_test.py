@@ -39,12 +39,7 @@ _FLAG_A2DP_OFFLOAD_USER_CODEC_SELECTION = (
     "com.android.bluetooth.flags.a2dp_offload_user_codec_selection"
 )
 _PROPERTY_A2DP_OFFLOAD_SUPPORTED = "ro.bluetooth.a2dp_offload.supported"
-_PROPERTY_CODEC_PRIORITY = "bluetooth.a2dp.source.%s_priority.config"
-_PROPERTY_VND_AUDIO_A2DP_CODEC_EXTENSIBILITY = (
-    "persist.vendor.audio.a2dp_codec_extensibility"
-)
 _PROPERTY_VND_AUDIO_LEAUDIO_SW_OFFLOAD = "persist.vendor.audio.sw_offload"
-_VALUE_CODEC_DISABLED = -1
 
 _Issuer = constants.TestRole
 _A2dpState = android_constants.A2dpState
@@ -53,7 +48,7 @@ _A2dpCodec = a2dp_ext.A2dpCodec
 
 
 class A2dpTest(navi_test_base.TwoDevicesTestBase):
-  dut_supported_codecs: list[_A2dpCodec]
+  dut_supported_codecs: set[int]
 
   @override
   async def async_setup_class(self) -> None:
@@ -68,28 +63,13 @@ class A2dpTest(navi_test_base.TwoDevicesTestBase):
           android_constants.Property.A2DP_SOURCE_OPUS_ENABLED, "true"
       )
 
-    self.dut_supported_codecs = [
-        codec
-        for codec in _A2dpCodec
-        if int(
-            self.dut.getprop(_PROPERTY_CODEC_PRIORITY % codec.name.lower())
-            or "0"
-        )
-        > _VALUE_CODEC_DISABLED
-        and (
-            codec != _A2dpCodec.OPUS
-            or self.dut.getprop(
-                android_constants.Property.A2DP_SOURCE_OPUS_ENABLED
-            )
-            == "true"
-        )
-    ]
-
     # TODO: Remove this once the flag is removed.
     if (
         (self.dut.getprop(_PROPERTY_A2DP_OFFLOAD_SUPPORTED) == "true")
         and (
-            self.dut.getprop(_PROPERTY_VND_AUDIO_A2DP_CODEC_EXTENSIBILITY)
+            self.dut.getprop(
+                android_constants.Property.A2DP_CODEC_EXTENSIBILITY
+            )
             == "true"
         )
         and (self.dut.getprop(_PROPERTY_VND_AUDIO_LEAUDIO_SW_OFFLOAD) == "true")
@@ -100,6 +80,18 @@ class A2dpTest(navi_test_base.TwoDevicesTestBase):
         raise signals.TestAbortClass(
             f"Failed to set flag {_FLAG_A2DP_OFFLOAD_USER_CODEC_SELECTION}"
         )
+
+  @override
+  async def async_setup_test(self) -> None:
+    await super().async_setup_test()
+    # Make sure A2DP profile is connected, or get_a2dp_supported_codec_types
+    # will return empty list.
+    self.dut.bt.waitForProfileReady(android_constants.Profile.A2DP)
+    self.dut_supported_codecs = {
+        codec.id
+        for codec in self.dut.bl4a.get_a2dp_supported_codec_types()
+        if codec.id is not None
+    }
 
   @override
   async def async_teardown_test(self) -> None:
@@ -351,6 +343,7 @@ class A2dpTest(navi_test_base.TwoDevicesTestBase):
       (_A2dpCodec.APTX,),
       (_A2dpCodec.APTX_HD,),
       (_A2dpCodec.LDAC,),
+      (_A2dpCodec.LHDC,),
       (_A2dpCodec.OPUS,),
   )
   @navi_test_base.retry(2)
@@ -368,9 +361,9 @@ class A2dpTest(navi_test_base.TwoDevicesTestBase):
       5. Verify the dominant frequency is correct (if supported).
 
     Args:
-      preferred_codec: A2DP codecs supported by REF.
+      preferred_codec: The preferred A2DP codec.
     """
-    if preferred_codec not in self.dut_supported_codecs:
+    if preferred_codec.android_codec_id not in self.dut_supported_codecs:
       self.skipTest(f"[DUT] Codec {preferred_codec.name} is not supported.")
 
     self.dut.bt.audioSetRepeat(android_constants.RepeatMode.ONE)
@@ -384,14 +377,15 @@ class A2dpTest(navi_test_base.TwoDevicesTestBase):
     with self.dut.bl4a.register_callback(bl4a_api.Module.A2DP) as dut_cb:
       ref_avdtp_connection = await self._setup_a2dp_connection(ref_codecs)
 
-      if (
-          preferred_codec == _A2dpCodec.OPUS
-          and not self.dut.bt.isSpatializerAvailable()
-      ):
-        self.skipTest(
-            "Spatializer is not available, probably because the DUT is an A"
-            " series."
-        )
+      if preferred_codec == _A2dpCodec.OPUS:
+        if not self.dut.bt.isSpatializerAvailable():
+          self.skipTest(
+              "Spatializer is not available, probably because the DUT is an A"
+              " series."
+          )
+
+        self.logger.info("[DUT] Enable spatializer.")
+        self.dut.bt.setSpatializerEnabled(True)
 
       ref_sinks = a2dp_ext.find_local_endpoints_by_codec(
           ref_avdtp_connection,
@@ -480,7 +474,7 @@ class A2dpTest(navi_test_base.TwoDevicesTestBase):
 
       if (
           buffer is not None
-          and preferred_codec != _A2dpCodec.LDAC
+          and preferred_codec not in (_A2dpCodec.LDAC, _A2dpCodec.LHDC)
           and audio.SUPPORT_AUDIO_PROCESSING
       ):
         dominant_frequency = audio.get_dominant_frequency(
@@ -504,16 +498,13 @@ class A2dpTest(navi_test_base.TwoDevicesTestBase):
       5. Stop stream.
       6. Verify dominant frequency.
     """
-    preferred_codec = _A2dpCodec.SBC
-    if preferred_codec not in self.dut_supported_codecs:
-      self.skipTest(f"[DUT] Codec {preferred_codec.name} is not supported.")
+    if android_constants.BluetoothCodecId.SBC not in self.dut_supported_codecs:
+      self.skipTest("[DUT] SBC is not supported.")
 
     self.dut.bt.audioSetRepeat(android_constants.RepeatMode.ONE)
 
     with self.dut.bl4a.register_callback(bl4a_api.Module.A2DP) as dut_cb:
-      ref_avdtp_connection = await self._setup_a2dp_connection(
-          [preferred_codec]
-      )
+      ref_avdtp_connection = await self._setup_a2dp_connection([_A2dpCodec.SBC])
 
       self.logger.info("[DUT] Set codec config to SBC Mono.")
       codec_config = bl4a_api.A2dpCodecConfiguration(
@@ -547,13 +538,13 @@ class A2dpTest(navi_test_base.TwoDevicesTestBase):
 
       ref_sinks = a2dp_ext.find_local_endpoints_by_codec(
           ref_avdtp_connection,
-          preferred_codec.codec_type,
+          _A2dpCodec.SBC.codec_type,
           avdtp.LocalSink,
-          vendor_id=preferred_codec.vendor_id,
-          codec_id=preferred_codec.codec_id,
+          vendor_id=_A2dpCodec.SBC.vendor_id,
+          codec_id=_A2dpCodec.SBC.codec_id,
       )
       if not ref_sinks:
-        self.fail(f"No sink found for codec {preferred_codec.name}.")
+        self.fail(f"No sink found for codec {_A2dpCodec.SBC.name}.")
       ref_sink = a2dp_ext.LocalSinkWrapper(ref_sinks[0])
 
       if self.dut.bt.isA2dpPlaying(self.ref.address):
@@ -574,7 +565,7 @@ class A2dpTest(navi_test_base.TwoDevicesTestBase):
             lambda: ref_sink.stream_state != avdtp.State.STREAMING
         )
 
-      buffer = a2dp_ext.register_sink_buffer(ref_sink.impl, preferred_codec)
+      buffer = a2dp_ext.register_sink_buffer(ref_sink.impl, _A2dpCodec.SBC)
 
       self.logger.info("[DUT] Start stream.")
       self.dut.bt.audioPlaySine()
@@ -621,15 +612,15 @@ class A2dpTest(navi_test_base.TwoDevicesTestBase):
 
       if self.user_params.get(navi_test_base.RECORD_FULL_DATA) and buffer:
         self.write_test_output_data(
-            f"a2dp_data_mono.{preferred_codec.format}",
+            f"a2dp_data_mono.{_A2dpCodec.SBC.format}",
             buffer,
         )
 
       if buffer is not None and audio.SUPPORT_AUDIO_PROCESSING:
         dominant_frequency = audio.get_dominant_frequency(
             buffer=buffer,
-            codec=preferred_codec.name,
-            format=preferred_codec.format,
+            codec=_A2dpCodec.SBC.name,
+            format=_A2dpCodec.SBC.format,
         )
         self.logger.info("Dominant frequency: %.2f", dominant_frequency)
         if not self.dut.device.is_emulator:
@@ -754,7 +745,6 @@ class A2dpTest(navi_test_base.TwoDevicesTestBase):
               address=self.ref.address,
               state=android_constants.ConnectionState.DISCONNECTED,
           ),
-          timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
       )
 
 

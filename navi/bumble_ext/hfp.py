@@ -14,9 +14,12 @@
 
 """Extended Bumble implementation of HFP protocol."""
 
+from __future__ import annotations
+
 import asyncio
 from collections.abc import Iterable, Sequence
 import dataclasses
+import enum
 import logging
 from typing import Literal, Self, overload
 
@@ -65,6 +68,13 @@ ESCO_PARAMETERS_T2_TRANSPARENT = hfp.EscoParameters(
     output_bandwidth=8000,
     retransmission_effort=hci.HCI_Enhanced_Setup_Synchronous_Connection_Command.RetransmissionEffort.OPTIMIZE_FOR_QUALITY,
 )
+
+
+@enum.unique
+class SinkAudioPolicy(enum.IntEnum):
+  UNCONFIGURED = 0
+  ALLOWED = 1
+  NOT_ALLOWED = 2
 
 
 _HF_FEATURE_TO_SDP_FEATURE = {
@@ -334,7 +344,7 @@ class AudioGatewaySdpRecord:
   async def find(
       cls,
       connection: device_lib.Connection,
-  ) -> list[Self]:
+  ) -> list[AudioGatewaySdpRecord]:
     """Searches all Audio-Gateway SDP record from remote device.
 
     Args:
@@ -343,7 +353,7 @@ class AudioGatewaySdpRecord:
     Returns:
         A list of Audio-Gateway SDP records.
     """
-    records = []
+    records: list[AudioGatewaySdpRecord] = []
     async with sdp.Client(connection) as sdp_client:
       search_result = await sdp_client.search_attributes(
           uuids=[core.BT_HANDSFREE_AUDIO_GATEWAY_SERVICE],
@@ -542,7 +552,7 @@ class HfProtocol(hfp.HfProtocol):
 
   @overload
   @override
-  async def execute_command(
+  async def execute_command(  # pyrefly: ignore[invalid-overload]
       self,
       cmd: str,
       timeout: float = 10.0,
@@ -553,7 +563,7 @@ class HfProtocol(hfp.HfProtocol):
 
   @overload
   @override
-  async def execute_command(
+  async def execute_command(  # pyrefly: ignore[invalid-overload]
       self,
       cmd: str,
       timeout: float = 10.0,
@@ -564,7 +574,7 @@ class HfProtocol(hfp.HfProtocol):
 
   @overload
   @override
-  async def execute_command(
+  async def execute_command(  # pyrefly: ignore[invalid-overload]
       self,
       cmd: str,
       timeout: float = 10.0,
@@ -646,3 +656,16 @@ class HfProtocol(hfp.HfProtocol):
         return ESCO_PARAMETERS_T2_TRANSPARENT
       case _:
         raise ValueError(f"Unsupported codec: {self.active_codec}")
+
+  async def set_sink_audio_policy(
+      self,
+      call_establish: SinkAudioPolicy,
+      connecting_time: SinkAudioPolicy,
+      in_band_ringtone: SinkAudioPolicy,
+      timeout: float = 10.0,
+  ) -> None:
+    """Sends AT+ANDROID=SINKAUDIOPOLICY command."""
+    await self.execute_command(
+        f"AT+ANDROID=SINKAUDIOPOLICY,{call_establish.value},{connecting_time.value},{in_band_ringtone.value}",
+        timeout=timeout,
+    )

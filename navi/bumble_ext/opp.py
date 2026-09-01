@@ -36,7 +36,7 @@ SUPPORTED_FORMAT_LIST_ATTRIBUTE_ID = 0x0303
 
 # Same as Android.
 DEFAULT_L2CAP_MTU = 8087
-MAX_RFCOMM_OBEX_PACKET_LENGTH = 65530
+MAX_OBEX_PACKET_LENGTH = 65530
 MIN_PACKET_LENGTH = 256
 MIN_PUT_HEADER_SIZE = len(
     bytes(
@@ -224,11 +224,7 @@ class Client(obex.ClientSession):
         obex.ConnectRequest(
             obex_version_number=obex.Version.V_1_0,
             flags=0,
-            maximum_obex_packet_length=(
-                MAX_RFCOMM_OBEX_PACKET_LENGTH
-                if isinstance(self.bearer, rfcomm.DLC)
-                else self.bearer.mtu
-            ),
+            maximum_obex_packet_length=MAX_OBEX_PACKET_LENGTH,
             headers=obex.Headers(count=count),
             final=True,
         )
@@ -353,11 +349,7 @@ class ServerConnection(obex.ServerSession):
         response_code=obex.ResponseCode.SUCCESS,
         obex_version_number=request.obex_version_number,
         flags=request.flags,
-        maximum_obex_packet_length=(
-            MAX_RFCOMM_OBEX_PACKET_LENGTH
-            if isinstance(self.bearer, rfcomm.DLC)
-            else self.bearer.mtu
-        ),
+        maximum_obex_packet_length=MAX_OBEX_PACKET_LENGTH,
         headers=obex.Headers(connection_id=connection_id),
     )
     self.send_response(response)

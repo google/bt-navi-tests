@@ -58,11 +58,12 @@ _DEFAUILT_ADVERTISING_PARAMETERS = device.AdvertisingParameters(
     primary_advertising_interval_min=100,
     primary_advertising_interval_max=100,
 )
-_DEFAULT_STEP_TIMEOUT_SECONDS = 10.0
+_DEFAULT_STEP_TIMEOUT_SECONDS = 20.0
 _PREPARE_TIME_SECONDS = 0.5
 _STREAMING_TIME_SECONDS = 1.0
 _CALLER_NAME = "Pixel Bluetooth"
 _CALLER_NUMBER = "123456789"
+_RECORDING_PATH = "/storage/self/primary/Recordings/record.wav"
 _GENERAL_DISCOVERABLE_AD_FLAGS = data_types.Flags(
     core.AdvertisingData.Flags.LE_GENERAL_DISCOVERABLE_MODE
 )
@@ -161,6 +162,8 @@ class LeAudioUnicastClientDualDeviceTest(navi_test_base.MultiDevicesTestBase):
   dut_vcp_enabled: bool = False
   dut_mcp_enabled: bool = False
   dut_ccp_enabled: bool = False
+
+  TEST_TIMEOUT_SECONDS = 180.0
 
   def _setup_unicast_server(
       self,
@@ -643,6 +646,11 @@ class LeAudioUnicastClientDualDeviceTest(navi_test_base.MultiDevicesTestBase):
 
       self.logger.info("[DUT] Start audio streaming")
       await asyncio.to_thread(self.dut.bt.audioPlaySine)
+      recorder = await self.dut.bl4a.start_audio_recording(
+          _RECORDING_PATH,
+          source=bl4a_api.AudioRecorder.Source.VOICE_COMMUNICATION,
+      )
+      self.test_case_context.push(recorder)
 
       async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
         # With current configuration, all ASEs will be active in bidirectional

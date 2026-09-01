@@ -152,17 +152,61 @@ class Protocol(avdtp.Protocol):
       avdtp.Stream,
   ] = avdtp.Stream
 
+  sink_factory: Callable[
+      [
+          avdtp.Protocol,
+          int,
+          avdtp.MediaCodecCapabilities,
+      ],
+      avdtp.LocalSink,
+  ] = avdtp.LocalSink
+
+  def __init__(
+      self,
+      l2cap_channel: l2cap.ClassicChannel,
+      version: tuple[int, int] = (1, 3),
+      *,
+      sink_factory: (
+          Callable[
+              [avdtp.Protocol, int, avdtp.MediaCodecCapabilities],
+              avdtp.LocalSink,
+          ]
+          | None
+      ) = None,
+  ) -> None:
+    super().__init__(l2cap_channel, version)
+    if sink_factory is not None:
+      self.sink_factory = sink_factory
+
+  def add_sink(
+      self, codec_capabilities: avdtp.MediaCodecCapabilities
+  ) -> avdtp.LocalSink:
+    """Adds a local sink."""
+    seid = len(self.local_endpoints) + 1
+    sink = self.sink_factory(self, seid, codec_capabilities)
+    self.local_endpoints.append(sink)
+    return sink
+
   @classmethod
   async def connect(
       cls,
       connection: device_lib.Connection,
       version: tuple[int, int] = (1, 3),
+      *,
+      sink_factory: (
+          Callable[
+              [avdtp.Protocol, int, avdtp.MediaCodecCapabilities],
+              avdtp.LocalSink,
+          ]
+          | None
+      ) = None,
   ) -> Self:
     """Connects to a remote AVDTP server.
 
     Args:
       connection: The connection to connect over.
       version: The AVDTP version to support.
+      sink_factory: Factory function or class for creating LocalSink instances.
 
     Returns:
       A Protocol instance.
@@ -170,7 +214,7 @@ class Protocol(avdtp.Protocol):
     channel = await connection.create_l2cap_channel(
         spec=l2cap.ClassicChannelSpec(psm=avdtp.AVDTP_PSM)
     )
-    return cls(channel, version)
+    return cls(channel, version, sink_factory=sink_factory)
 
   async def create_stream(
       self, source: avdtp.LocalStreamEndPoint, sink: avdtp.StreamEndPointProxy

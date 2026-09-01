@@ -39,6 +39,8 @@ _DEFAULT_STEP_TIMEOUT_SECONDS = 5.0
 _DEFAULT_ADVERTISING_INTERVAL = 100
 _STREAMING_TIME_SECONDS = 1.0
 _PROPERTY_ASHA_ENABLED = 'bluetooth.profile.asha.central.enabled'
+_ASHA_MIN_VOLUME = -128
+_ASHA_MAX_VOLUME = 0
 _HISYNC_ID = bytes([0x12, 0x34, 0x56, 0x78, 0x90, 0xAB, 0xCD, 0xEF])
 _DEFAULT_ADVERTISING_PARAMETERS = device.AdvertisingParameters(
     own_address_type=hci.OwnAddressType.RANDOM,
@@ -254,8 +256,6 @@ class AshaDualDevicesTest(navi_test_base.MultiDevicesTestBase):
       4. Set volume to max.
       5. Verify volume changed to 0.
     """
-    stream_type = android_constants.StreamType.MUSIC
-
     volume_lists = [
         pyee_extensions.EventTriggeredValueObserver(
             ref_asha_service,
@@ -270,17 +270,17 @@ class AshaDualDevicesTest(navi_test_base.MultiDevicesTestBase):
 
     async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
       self.logger.info('[DUT] Set volume to min')
-      self.dut.bt.setVolume(stream_type, self.dut.bt.getMinVolume(stream_type))
+      self.dut.bt.setAshaVolume(_ASHA_MIN_VOLUME)
       for i in range(len(self.refs)):
         self.logger.info('[REF-%d] Wait for volume changed', i)
-        await volume_lists[i].wait_for_target_value(-128)
+        await volume_lists[i].wait_for_target_value(_ASHA_MIN_VOLUME)
 
     async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
       self.logger.info('[DUT] Set volume to max')
-      self.dut.bt.setVolume(stream_type, self.dut.bt.getMaxVolume(stream_type))
+      self.dut.bt.setAshaVolume(_ASHA_MAX_VOLUME)
       for i in range(len(self.refs)):
         self.logger.info('[REF-%d] Wait for volume changed', i)
-        await volume_lists[i].wait_for_target_value(0)
+        await volume_lists[i].wait_for_target_value(_ASHA_MAX_VOLUME)
 
 
 if __name__ == '__main__':

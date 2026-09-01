@@ -36,13 +36,13 @@ from bumble import pairing
 from bumble import rfcomm
 from bumble import smp
 from mobly import test_runner
+from mobly import signals
 
 from navi.tests import navi_test_base
 from navi.utils import android_constants
 from navi.utils import bl4a_api
 from navi.utils import constants
 from navi.utils import pairing as pairing_utils
-from navi.utils import pyee_extensions
 
 _DEFAULT_STEP_TIMEOUT_SECONDS = 10.0
 _DEFAULT_ACL_DISCONNECTION_TIMEOUT_SECONDS = 60.0
@@ -74,6 +74,11 @@ _IoCapability = pairing.PairingDelegate.IoCapability
 
 class AutonomousRepairingTest(navi_test_base.TwoDevicesTestBase):
   """Test Bluetooth Autonomous Repairing."""
+
+  async def async_setup_class(self) -> None:
+    await super().async_setup_class()
+    if self.dut.is_watch:
+      raise signals.TestAbortClass("This test is not supported on watches.")
 
   def _check_bond_on_dut(
       self,
@@ -221,11 +226,6 @@ class AutonomousRepairingTest(navi_test_base.TwoDevicesTestBase):
         gatt.Service(uuid=service_uuid, characteristics=[])
     )
 
-  # TODO: Remove this skip once the bug is fixed.
-  @navi_test_base.TwoDevicesTestBase.require_flag(
-      "com.android.bluetooth.flags.autonomous_repairing_initiation",
-      "android.bluetooth.platform.flags.autonomous_repairing_initiation",
-  )
   @navi_test_base.parameterized(
       *itertools.product(
           [
@@ -427,11 +427,6 @@ class AutonomousRepairingTest(navi_test_base.TwoDevicesTestBase):
 
     self._check_bond_on_dut()
 
-  # TODO: Remove this skip once the bug is fixed.
-  @navi_test_base.TwoDevicesTestBase.require_flag(
-      "com.android.bluetooth.flags.autonomous_repairing_initiation",
-      "android.bluetooth.platform.flags.autonomous_repairing_initiation",
-  )
   @navi_test_base.parameterized(*[
       (variant, pairing_direction)
       for variant, pairing_direction in itertools.product(
@@ -525,56 +520,14 @@ class AutonomousRepairingTest(navi_test_base.TwoDevicesTestBase):
       )
       self.test_case_context.push(gatt_client)
     else:
-      service_uuid = str(uuid.uuid4())
-
-      self.logger.info("[DUT] Start advertising.")
-      advertise = await self.dut.bl4a.start_legacy_advertiser(
-          settings=bl4a_api.LegacyAdvertiseSettings(
-              own_address_type=android_constants.AddressTypeStatus.PUBLIC
-          ),
-          advertising_data=bl4a_api.AdvertisingData(
-              service_uuids=[service_uuid]
-          ),
+      ref_dut_acl = await self.connect_le_from_ref(
+          dut_address_type=android_constants.AddressTypeStatus.PUBLIC,
+          ref_address_type=hci.OwnAddressType.PUBLIC,
+          wait_for_dut_connected=False,
       )
 
-      self.logger.info("[REF] Scan for DUT.")
-      scan_result = asyncio.get_running_loop().create_future()
-      with advertise, pyee_extensions.EventWatcher() as watcher:
-
-        def on_advertising_report(adv: device.Advertisement) -> None:
-          if service_uuids := adv.data.get(
-              core.AdvertisingData.Type.COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS
-          ):
-            if service_uuid in service_uuids and not scan_result.done():
-              scan_result.set_result(adv.address)
-
-        watcher.on(self.ref.device, "advertisement", on_advertising_report)
-
-        self.logger.info("[REF] Start scanning.")
-        await self.ref.device.start_scanning()
-
-        self.logger.info("[REF] Wait for advertising report from DUT.")
-        async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
-          dut_addr = await scan_result
-
-        self.logger.info("[REF] Stop scanning.")
-        await self.ref.device.stop_scanning()
-
-        ref_dut_acl: device.Connection | None
-        self.logger.info("[REF] Connect to DUT.")
-        ref_dut_acl = await self.ref.device.connect(
-            dut_addr,
-            transport=core.BT_LE_TRANSPORT,
-            own_address_type=hci.OwnAddressType.PUBLIC,
-            timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
-        )
-
-        self.logger.info("[REF] Get remote LE features.")
-        async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
-          await ref_dut_acl.get_remote_le_features()
-
-        self.logger.info("[REF] Pair.")
-        pair_task = asyncio.create_task(ref_dut_acl.pair())
+      self.logger.info("[REF] Pair.")
+      pair_task = asyncio.create_task(ref_dut_acl.pair())
 
     self.logger.info("[DUT] Wait for connection.")
     await adapter_cb.wait_for_event(
@@ -666,11 +619,6 @@ class AutonomousRepairingTest(navi_test_base.TwoDevicesTestBase):
         with self.assertRaises((core.ProtocolError, asyncio.CancelledError)):
           await pair_task
 
-  # TODO: Remove this skip once the bug is fixed.
-  @navi_test_base.TwoDevicesTestBase.require_flag(
-      "com.android.bluetooth.flags.autonomous_repairing_initiation",
-      "android.bluetooth.platform.flags.autonomous_repairing_initiation",
-  )
   @navi_test_base.parameterized(
       constants.Direction.OUTGOING, constants.Direction.INCOMING
   )
@@ -835,11 +783,6 @@ class AutonomousRepairingTest(navi_test_base.TwoDevicesTestBase):
 
     await self._check_keys_on_ref(check_ltk=False)
 
-  # TODO: Remove this skip once the bug is fixed.
-  @navi_test_base.TwoDevicesTestBase.require_flag(
-      "com.android.bluetooth.flags.autonomous_repairing_initiation",
-      "android.bluetooth.platform.flags.autonomous_repairing_initiation",
-  )
   @navi_test_base.parameterized(
       constants.Direction.OUTGOING, constants.Direction.INCOMING
   )
@@ -933,33 +876,30 @@ class AutonomousRepairingTest(navi_test_base.TwoDevicesTestBase):
       self.test_case_context.push(dut_server)
       self.logger.info("[DUT] Listen L2CAP on PSM %d", dut_server.psm)
 
-      self.logger.info("[DUT] Start advertising.")
-      await self.dut.bl4a.start_legacy_advertiser(
-          settings=bl4a_api.LegacyAdvertiseSettings(
-              own_address_type=android_constants.AddressTypeStatus.PUBLIC
-          ),
-      )
+      def on_connection(connection: device.Connection) -> None:
+        if connection.transport == core.PhysicalTransport.LE:
 
-      self.logger.info("[REF] Connect to DUT.")
-      ref_dut_acl = await self.ref.device.connect(
-          f"{self.dut.address}/P",
-          transport=core.BT_LE_TRANSPORT,
-          timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
-          own_address_type=hci.OwnAddressType.PUBLIC,
-      )
+          def on_security_request(auth_req: smp.AuthReq) -> None:
+            del auth_req  # Unused.
 
-      def on_security_request(auth_req):
-        del auth_req  # Unused.
+            self.logger.info("[REF] Initiating pairing.")
+            nonlocal pair_task
+            pair_task = asyncio.create_task(self.ref.device.pair(connection))
 
-        self.logger.info("[REF] Initiating pairing.")
-        nonlocal pair_task
-        pair_task = asyncio.create_task(self.ref.device.pair(ref_dut_acl))
+          connection.on(connection.EVENT_SECURITY_REQUEST, on_security_request)
 
-      ref_dut_acl.on(ref_dut_acl.EVENT_SECURITY_REQUEST, on_security_request)
+      self.ref.device.on(self.ref.device.EVENT_CONNECTION, on_connection)
 
-      # Workaround: Request feature exchange to avoid connection failure.
-      async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
-        await ref_dut_acl.get_remote_le_features()
+      try:
+        ref_dut_acl = await self.connect_le_from_ref(
+            dut_address_type=android_constants.AddressTypeStatus.PUBLIC,
+            ref_address_type=hci.OwnAddressType.PUBLIC,
+            wait_for_dut_connected=False,
+        )
+      finally:
+        self.ref.device.remove_listener(
+            self.ref.device.EVENT_CONNECTION, on_connection
+        )
 
       self.logger.info("[REF] Connect L2CAP channel to DUT.")
       async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):

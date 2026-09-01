@@ -39,6 +39,7 @@ class BluetoothProfileSnippet : Snippet {
   private val context = instrumentation.targetContext
   private val broadcastReceivers = mutableMapOf<String, BroadcastReceiver>()
   private val bluetoothAdapter = context.getSystemService(BluetoothManager::class.java).adapter
+  private val profileProxys = mutableMapOf<Int, BluetoothProfile>()
 
   init {
     instrumentation.uiAutomation.adoptShellPermissionIdentity()
@@ -83,8 +84,9 @@ class BluetoothProfileSnippet : Snippet {
 
   /** Unregisters a Profile callback with ID [callbackId]. */
   @Rpc(description = "Unregister Profile callbacks.")
-  fun unregisterProfileCallback(callbackId: String) =
+  fun unregisterProfileCallback(callbackId: String) {
     broadcastReceivers.remove(callbackId)?.let { context.unregisterReceiver(it) }
+  }
 
   /** Gets active devices of [profile]. */
   @Rpc(description = "Get active devices of a profile.")
@@ -100,6 +102,32 @@ class BluetoothProfileSnippet : Snippet {
       return bluetoothAdapter.removeActiveDevice(profiles)
     }
   }
+
+  /** Gets connection state of [profile] for device in [address]. */
+  @Rpc(description = "Get connection state of a profile.")
+  fun getProfileConnectionState(profile: Int, address: String): Int =
+    getProfileProxy(profile).getConnectionState(bluetoothAdapter.getRemoteDevice(address))
+
+  /** Gets connected devices of [profile]. */
+  @Rpc(description = "Get connected devices of a profile.")
+  fun getProfileConnectedDevices(profile: Int): List<String> =
+    getProfileProxy(profile).connectedDevices.map { it.address }
+
+  /** Gets devices matching connection states of [profile] to device in [states]. */
+  @Rpc(description = "Get devices matching connection states of a profile.")
+  fun getProfileDevicesMatchingConnectionStates(profile: Int, states: List<Int>): List<String> =
+    getProfileProxy(profile).getDevicesMatchingConnectionStates(states.toIntArray()).map {
+      it.address
+    }
+
+  /** Waits for connection state of [profile] to device in [address] to be [connected]. */
+  @Rpc(description = "Wait for connection state of a profile.")
+  fun waitForProfileReady(profile: Int) {
+    val unused = Utils.getProfileProxy(context, profile)
+  }
+
+  private fun getProfileProxy(profile: Int): BluetoothProfile =
+    profileProxys.getOrPut(profile) { Utils.getProfileProxy(context, profile) }
 
   companion object {
     val STATE_CHANGE_ACTIONS =

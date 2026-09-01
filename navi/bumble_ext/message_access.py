@@ -679,8 +679,10 @@ class MnsSdpInfo:
 class MnsServerSession(obex.ServerSession):
   """MAP Message Notification Service (MNS) server session."""
 
-  connected = asyncio.Event()
-  notifications = asyncio.Queue[bytes]()
+  def __init__(self, bearer: obex.Bearer):
+    super().__init__(bearer)
+    self.connected = asyncio.Event()
+    self.notifications = asyncio.Queue[bytes]()
 
   @override
   def _on_connect(self, request: obex.ConnectRequest) -> None:

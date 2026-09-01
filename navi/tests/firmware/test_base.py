@@ -15,6 +15,7 @@
 """Base classes for Bluetooth firmware tests."""
 
 import asyncio
+from collections.abc import Sequence
 import functools
 import pathlib
 import secrets
@@ -52,8 +53,8 @@ class _FirmwareTestBase(navi_test_base.BaseTestBase):
   """Base class for firmware tests."""
 
   NUMBLE_OF_DEVICES: int
-  _devices: list[crown.CrownDevice]
-  _android_devices: list[android_device.AndroidDevice]
+  _devices: Sequence[crown.CrownDevice] = ()
+  _android_devices: Sequence[android_device.AndroidDevice] = ()
   is_emulator: bool = False
 
   @override
@@ -82,12 +83,17 @@ class _FirmwareTestBase(navi_test_base.BaseTestBase):
           crown_driver_specs = [
               spec for spec in crown_driver_specs.split(",") if spec
           ]
+        reset_delay = float(
+            self.user_params.get("crown_reset_delay", 0.0) or 0.0
+        )
         self._devices = [
             await crown.CrownDevice.from_android_device(device)
             for device in self._android_devices
-            if not no_android
         ] + [
-            await crown.CrownDevice.create(crown.CrownAdapter(hci_spec))
+            await crown.CrownDevice.create(
+                crown.CrownAdapter(hci_spec),
+                reset_delay=reset_delay,
+            )
             for hci_spec in crown_driver_specs
         ]
         self.is_emulator = bool(self.user_params.get("is_emulator", False))

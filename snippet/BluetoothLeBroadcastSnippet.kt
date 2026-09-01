@@ -82,7 +82,9 @@ class BluetoothLeBroadcastSnippet : Snippet {
         .setPublicBroadcast(
           settings?.optBoolean(SnippetConstants.LEA_BROADCAST_FIELD_PUBLIC) ?: false
         )
-        .setBroadcastName(settings?.optString(SnippetConstants.FIELD_NAME))
+        .setBroadcastName(
+          settings?.optString(SnippetConstants.FIELD_NAME)?.takeIf { it.isNotEmpty() }
+        )
         .setBroadcastCode(broadcastCode)
         .apply {
           val subgroups =

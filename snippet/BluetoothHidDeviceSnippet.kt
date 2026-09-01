@@ -55,6 +55,15 @@ class BluetoothHidDeviceSnippet : Snippet {
             putInt(SnippetConstants.FIELD_STATE, state)
           }
         }
+
+        override fun onGetReport(device: BluetoothDevice, type: Byte, id: Byte, bufferSize: Int) {
+          Utils.postSnippetEvent(callbackId, SnippetConstants.HID_DEVICE_ON_GET_REPORT) {
+            putString(SnippetConstants.FIELD_DEVICE, device.address)
+            putByte(SnippetConstants.FIELD_TYPE, type)
+            putByte(SnippetConstants.FIELD_ID, id)
+            putInt(SnippetConstants.FIELD_BUFFER_SIZE, bufferSize)
+          }
+        }
       }
     if (!proxy.registerApp(sdpSettings, null, null, context.mainExecutor, callback)) {
       throw RuntimeException("Failed to register HID Device App.")

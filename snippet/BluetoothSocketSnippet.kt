@@ -278,14 +278,14 @@ class BluetoothSocketSnippet : Snippet {
     if (bytesToRead == null) {
       val result = inputStream.read(actualBuf)
       if (result == -1) {
-        throw IOException("EOF")
+        throw IOException("-1")
       }
       bytesRead = result
     } else {
       while (bytesRead < bytesToRead) {
         val result = inputStream.read(actualBuf, bytesRead, bytesToRead - bytesRead)
         if (result == -1) {
-          throw IOException("EOF")
+          throw IOException("-1")
         }
         bytesRead += result
       }

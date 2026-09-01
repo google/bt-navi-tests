@@ -13,8 +13,6 @@
 #  limitations under the License.
 
 import asyncio
-import contextlib
-import datetime
 import enum
 
 from bumble import core
@@ -23,6 +21,7 @@ from bumble import l2cap
 from bumble import pairing
 from mobly import test_runner
 from mobly import records
+from mobly.snippet import errors as snippet_errors
 from typing_extensions import override
 
 from navi.tests import navi_test_base
@@ -37,7 +36,7 @@ class Variant(enum.Enum):
 
 
 _PairingDelegate = pairing.PairingDelegate
-_DEFAULT_TIMEOUT_SECONDS = 5.0
+_DEFAULT_TIMEOUT_SECONDS = 10.0
 _TEST_DATA = bytes(i % 256 for i in range(256))
 
 
@@ -53,17 +52,6 @@ class L2capTest(navi_test_base.TwoDevicesTestBase):
     # Terminate ACL connection after pairing.
     with self.dut.bl4a.register_callback(bl4a_api.Module.ADAPTER) as dut_cb:
       await self.le_connect_and_pair(hci.OwnAddressType.RANDOM)
-      self.logger.info("[DUT] Wait for disconnected.")
-      ref_dut_acl = self.ref.device.find_connection_by_bd_addr(
-          hci.Address(self.dut.address),
-          core.BT_LE_TRANSPORT,
-      )
-      async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
-        if ref_dut_acl:
-          with contextlib.suppress(hci.HCI_Error, hci.HCI_StatusError):
-            await ref_dut_acl.disconnect()
-        await self.ref.device.power_off()
-        await self.ref.device.power_on()
       await dut_cb.wait_for_event(bl4a_api.AclDisconnected)
 
   async def _test_transmission(
@@ -124,24 +112,11 @@ class L2capTest(navi_test_base.TwoDevicesTestBase):
     with self.dut.bl4a.create_l2cap_server(secure=secure) as server:
       self.logger.info("[DUT] Listen L2CAP on PSM %d", server.psm)
 
-      self.logger.info("[DUT] Start advertising.")
-      await self.dut.bl4a.start_legacy_advertiser(
-          settings=bl4a_api.LegacyAdvertiseSettings(
-              own_address_type=android_constants.AddressTypeStatus.PUBLIC
-          ),
+      ref_dut_acl = await self.connect_le_from_ref(
+          dut_address_type=android_constants.AddressTypeStatus.PUBLIC,
+          ref_address_type=hci.OwnAddressType.RANDOM,
+          timeout=_DEFAULT_TIMEOUT_SECONDS,
       )
-
-      self.logger.info("[REF] Connect to DUT.")
-      ref_dut_acl = await self.ref.device.connect(
-          f"{self.dut.address}/P",
-          transport=core.BT_LE_TRANSPORT,
-          timeout=datetime.timedelta(seconds=15).total_seconds(),
-          own_address_type=hci.OwnAddressType.RANDOM,
-      )
-
-      # Workaround: Request feature exchange to avoid connection failure.
-      async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
-        await ref_dut_acl.get_remote_le_features()
 
       if secure:
         async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
@@ -274,24 +249,11 @@ class L2capTest(navi_test_base.TwoDevicesTestBase):
     with self.dut.bl4a.create_l2cap_server(secure=False) as server:
       pass
 
-    self.logger.info("[DUT] Start advertising.")
-    await self.dut.bl4a.start_legacy_advertiser(
-        settings=bl4a_api.LegacyAdvertiseSettings(
-            own_address_type=android_constants.AddressTypeStatus.PUBLIC
-        ),
+    ref_dut_acl = await self.connect_le_from_ref(
+        dut_address_type=android_constants.AddressTypeStatus.PUBLIC,
+        ref_address_type=hci.OwnAddressType.RANDOM,
+        timeout=_DEFAULT_TIMEOUT_SECONDS,
     )
-
-    self.logger.info("[REF] Connect to DUT.")
-    ref_dut_acl = await self.ref.device.connect(
-        f"{self.dut.address}/P",
-        transport=core.BT_LE_TRANSPORT,
-        timeout=datetime.timedelta(seconds=15).total_seconds(),
-        own_address_type=hci.OwnAddressType.RANDOM,
-    )
-
-    # Workaround: Request feature exchange to avoid connection failure.
-    async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
-      await ref_dut_acl.get_remote_le_features()
 
     async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
       with self.assertRaises(core.BaseBumbleError):
@@ -299,6 +261,155 @@ class L2capTest(navi_test_base.TwoDevicesTestBase):
         await ref_dut_acl.create_l2cap_channel(
             l2cap.LeCreditBasedChannelSpec(psm=server.psm)
         )
+
+  @navi_test_base.named_parameterized(
+      ("secure", True),
+      ("insecure", False),
+  )
+  async def test_incoming_connection_with_settings(self, secure: bool) -> None:
+    """Test L2CAP incoming connection using BluetoothSocketSettings.
+
+    Args:
+      secure: Whether encryption is required.
+    """
+    if secure:
+      await self._setup_le_pairing()
+
+    server = self.dut.bl4a.create_server_socket_with_settings(
+        settings=bl4a_api.BluetoothSocketSettings(
+            encryption_required=secure, authentication_required=False
+        ),
+    )
+    assert isinstance(server, bl4a_api.L2capServerSocket)
+    self.test_case_context.enter_context(server)
+    self.logger.info("[DUT] Listen L2CAP on PSM %d using settings", server.psm)
+
+    ref_dut_acl = await self.connect_le_from_ref(
+        dut_address_type=android_constants.AddressTypeStatus.PUBLIC,
+        ref_address_type=hci.OwnAddressType.RANDOM,
+        timeout=_DEFAULT_TIMEOUT_SECONDS,
+    )
+
+    if secure:
+      async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
+        await ref_dut_acl.encrypt(True)
+
+    self.logger.info("[REF] Connect L2CAP channel to DUT.")
+    async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
+      ref_dut_l2cap_channel, dut_ref_l2cap_channel = await asyncio.gather(
+          ref_dut_acl.create_l2cap_channel(
+              l2cap.LeCreditBasedChannelSpec(psm=server.psm)
+          ),
+          server.accept(),
+      )
+      await self.test_case_context.enter_async_context(dut_ref_l2cap_channel)
+
+    await self._test_transmission(ref_dut_l2cap_channel, dut_ref_l2cap_channel)
+
+    self.logger.info("[REF] Disconnect L2CAP channel.")
+    await ref_dut_l2cap_channel.disconnect()
+
+  @navi_test_base.named_parameterized(
+      ("secure", True),
+      ("insecure", False),
+  )
+  async def test_outgoing_connection_with_settings(self, secure: bool) -> None:
+    """Test L2CAP outgoing connection using BluetoothSocketSettings.
+
+    Args:
+      secure: Whether encryption is required.
+    """
+    if secure:
+      await self._setup_le_pairing()
+
+    ref_accept_future = asyncio.get_running_loop().create_future()
+    server = self.ref.device.create_l2cap_server(
+        spec=l2cap.LeCreditBasedChannelSpec(),
+        handler=ref_accept_future.set_result,
+    )
+    self.logger.info("[REF] Listen L2CAP on PSM %d", server.psm)
+
+    self.logger.info("[REF] Start advertising.")
+    await self.ref.device.start_advertising(
+        own_address_type=hci.OwnAddressType.RANDOM
+    )
+
+    # On some emulator images (at least until SDK Level 35), stack may not be
+    # able to connect to a random address if it's not scanned yet.
+    self.logger.info("[DUT] Start scanning for REF.")
+    scanner = self.dut.bl4a.start_scanning(
+        scan_filter=bl4a_api.ScanFilter(
+            device=self.ref.random_address,
+            address_type=android_constants.AddressTypeStatus.RANDOM,
+        ),
+    )
+    with scanner:
+      self.logger.info("[DUT] Wait for scan result.")
+      await scanner.wait_for_event(bl4a_api.ScanResult)
+
+    self.logger.info("[DUT] Connect L2CAP channel to REF using settings.")
+    async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
+      ref_dut_l2cap_channel, dut_ref_l2cap_channel = await asyncio.gather(
+          ref_accept_future,
+          self.dut.bl4a.create_socket_with_settings(
+              address=self.ref.random_address,
+              address_type=android_constants.AddressTypeStatus.RANDOM,
+              settings=bl4a_api.BluetoothSocketSettings(
+                  encryption_required=secure,
+                  authentication_required=False,
+                  l2cap_psm=server.psm,
+              ),
+          ),
+      )
+      await self.test_case_context.enter_async_context(dut_ref_l2cap_channel)
+
+    assert isinstance(
+        dut_ref_l2cap_channel, bl4a_api.L2capSocket
+    ), "DUT socket is not L2CAP socket."
+    await self._test_transmission(ref_dut_l2cap_channel, dut_ref_l2cap_channel)
+
+    self.logger.info("[DUT] Disconnect L2CAP channel.")
+    await dut_ref_l2cap_channel.close()
+
+  async def test_read_returns_minus_one_on_remote_disconnect(self) -> None:
+    """Tests L2CAP read returns -1 on remote disconnect.
+
+    Test steps:
+      1. Open L2CAP server on DUT.
+      2. Start advertising on DUT.
+      3. Connect L2CAP from REF to DUT.
+      4. Disconnect L2CAP from REF.
+      5. Verify DUT read returns -1 (raises ApiError with "-1").
+      6. Verify DUT socket is disconnected.
+    """
+    server = self.dut.bl4a.create_l2cap_server(secure=False)
+    self.test_case_context.enter_context(server)
+    self.logger.info("[DUT] Listen L2CAP on PSM %d", server.psm)
+
+    ref_dut_acl = await self.connect_le_from_ref(
+        dut_address_type=android_constants.AddressTypeStatus.PUBLIC,
+        ref_address_type=hci.OwnAddressType.RANDOM,
+        timeout=_DEFAULT_TIMEOUT_SECONDS,
+    )
+
+    self.logger.info("[REF] Connect L2CAP channel to DUT.")
+    async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
+      ref_dut_l2cap_channel, dut_ref_l2cap_channel = await asyncio.gather(
+          ref_dut_acl.create_l2cap_channel(
+              l2cap.LeCreditBasedChannelSpec(psm=server.psm)
+          ),
+          server.accept(),
+      )
+
+      self.logger.info("[REF] Disconnect L2CAP channel.")
+      await ref_dut_l2cap_channel.disconnect()
+
+    self.logger.info("[DUT] Verify read returns -1.")
+    with self.assertRaisesRegex(snippet_errors.ApiError, "-1"):
+      await dut_ref_l2cap_channel.read()
+
+    self.logger.info("[DUT] Verify socket is disconnected.")
+    self.assertFalse(dut_ref_l2cap_channel.is_connected())
 
 
 if __name__ == "__main__":

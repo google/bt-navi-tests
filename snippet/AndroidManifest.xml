@@ -9,7 +9,10 @@
 
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+  <uses-permission android:name="android.permission.RECORD_AUDIO" />
   <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+  <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+  <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
   <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
   <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
   <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
@@ -64,6 +67,7 @@
                        com.google.wireless.android.pixel.bluetooth.snippet.BluetoothA2dpSnippet,
                        com.google.wireless.android.pixel.bluetooth.snippet.BluetoothAdapterSnippet,
                        com.google.wireless.android.pixel.bluetooth.snippet.BluetoothAshaSnippet,
+                       com.google.wireless.android.pixel.bluetooth.snippet.BluetoothCsipSetCoordinatorSnippet,
                        com.google.wireless.android.pixel.bluetooth.snippet.BluetoothGattClientSnippet,
                        com.google.wireless.android.pixel.bluetooth.snippet.BluetoothGattServerSnippet,
                        com.google.wireless.android.pixel.bluetooth.snippet.BluetoothHapClientSnippet,
@@ -99,6 +103,14 @@
       <meta-data
           android:name="android.telecom.INCLUDE_SELF_MANAGED_CALLS"
           android:value="true" />
+    </service>
+    <service
+        android:name=".MockConnectionService"
+        android:permission="android.permission.BIND_CONNECTION_SERVICE"
+        android:exported="true">
+      <intent-filter>
+        <action android:name="android.telecom.ConnectionService" />
+      </intent-filter>
     </service>
     <service
         android:name=".MediaBrowserServiceSnippet$MediaLibraryServiceImpl"

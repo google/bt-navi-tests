@@ -409,7 +409,7 @@ class AudioStreamControlService(gatt.TemplateService):
   UUID = gatt.GATT_AUDIO_STREAM_CONTROL_SERVICE
 
   ase_state_machines: dict[int, AudioStreamEndpointCharacteristic]
-  ase_control_point: gatt_adapters.SerializableCharacteristicAdapter[
+  ase_control_point: gatt_adapters.SerializableCharacteristicAdapter[  # pyrefly: ignore[bad-specialization]
       ascs.ASE_Operation
   ]
   _active_client: device.Connection | None = None
@@ -436,7 +436,7 @@ class AudioStreamControlService(gatt.TemplateService):
         },
     }  # ASE state machines, by ASE ID
 
-    self.ase_control_point = gatt_adapters.SerializableCharacteristicAdapter[
+    self.ase_control_point = gatt_adapters.SerializableCharacteristicAdapter[  # pyrefly: ignore[bad-specialization]
         ascs.ASE_Operation
     ](
         gatt.Characteristic(
@@ -482,7 +482,7 @@ class AudioStreamControlService(gatt.TemplateService):
               ascs.AseResponseCode.UNSUPPORTED_OPCODE,
               ascs.AseReasonCode.NONE,
           )
-      return ase_id, *result
+      return (ase_id, result[0], result[1])
     else:
       return (
           ase_id,
@@ -586,7 +586,7 @@ class AudioStreamControlServiceProxy(gatt_client.ProfileServiceProxy):
 
   sink_ase: list[gatt_client.CharacteristicProxy[bytes]]
   source_ase: list[gatt_client.CharacteristicProxy[bytes]]
-  ase_control_point: gatt_adapters.SerializableCharacteristicProxyAdapter[
+  ase_control_point: gatt_adapters.SerializableCharacteristicProxyAdapter[  # pyrefly: ignore[bad-specialization]
       ascs.ASE_Operation
   ]
 
@@ -600,7 +600,7 @@ class AudioStreamControlServiceProxy(gatt_client.ProfileServiceProxy):
         gatt.GATT_SOURCE_ASE_CHARACTERISTIC
     )
     self.ase_control_point = (
-        gatt_adapters.SerializableCharacteristicProxyAdapter[
+        gatt_adapters.SerializableCharacteristicProxyAdapter[  # pyrefly: ignore[bad-specialization]
             ascs.ASE_Operation
         ](
             service_proxy.get_characteristics_by_uuid(

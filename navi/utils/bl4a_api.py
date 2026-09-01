@@ -96,6 +96,8 @@ class Module(enum.Enum):
   A2DP_SINK = enum.auto()
   HAP_CLIENT = enum.auto()
   VOLUME_CONTROL = enum.auto()
+  HEADTRACKER = enum.auto()
+  CSIP_SET_COORDINATOR = enum.auto()
 
 
 @dataclasses.dataclass
@@ -198,6 +200,12 @@ class CallbackHandler:
       case Module.VOLUME_CONTROL:
         handler = snippet.registerVolumeControlCallback()
         on_close = snippet.unregisterVolumeControlCallback
+      case Module.HEADTRACKER:
+        handler = snippet.audioRegisterHeadTrackerCallback()
+        on_close = snippet.audioUnregisterHeadTrackerCallback
+      case Module.CSIP_SET_COORDINATOR:
+        handler = snippet.registerCsipSetCoordinatorCallback()
+        on_close = snippet.unregisterCsipSetCoordinatorCallback
       case _:
         raise ValueError(f'Unsupported module: {module}')
     return cls(snippet=snippet, handler=handler, on_close=on_close)
@@ -241,10 +249,10 @@ class CallbackHandler:
         # inspect.getsource may raise OSError if source unavailable.
         with contextlib.suppress(OSError):
           match_msg = f'matching `{inspect.getsource(predicate).strip()}`'
-      event_class = event
+      event_class = cast(type[JsonDeserializableEvent], event)
     else:
       match_msg = f'== {event}'
-      event_class = event.__class__
+      event_class = cast(type[JsonDeserializableEvent], event.__class__)
 
     try:
       if not isinstance(event, type):
@@ -259,18 +267,18 @@ class CallbackHandler:
 
         def match_and_log(e: callback_event.CallbackEvent) -> bool:
           _logger.debug('Raw event data: %s', e.data)
-          return predicate(event.from_mapping(e.data))
+          return predicate(cast(Any, event_class.from_mapping(e.data)))
 
         got = await asyncio.to_thread(
             lambda: self.handler.waitForEvent(
-                event.EVENT_NAME,
+                event_class.EVENT_NAME,
                 match_and_log,
                 timeout=timeout,
             )
         )
       else:
         got = await asyncio.to_thread(
-            lambda: self.handler.waitAndGet(event.EVENT_NAME, timeout)
+            lambda: self.handler.waitAndGet(event_class.EVENT_NAME, timeout)
         )
       got.data['creation_time'] = datetime.datetime.fromtimestamp(
           got.creation_time / 1000
@@ -327,7 +335,12 @@ class JsonDeserializable:
       json_field = field.metadata.get(_FIELD, field.name)
       value = mapping.get(json_field)
       mapper = field.metadata.get(_MAPPER, lambda x: x)
-      kwargs[field.name] = mapper(value) if value is not None else None
+      if value is not None:
+        kwargs[field.name] = mapper(value)
+      elif field.default is not dataclasses.MISSING:
+        kwargs[field.name] = field.default
+      else:
+        kwargs[field.name] = None
     return cls(**kwargs)
 
 
@@ -391,7 +404,7 @@ class GattCharacteristic:
   uuid: str
   properties: android_constants.GattCharacteristicProperty
   permissions: android_constants.GattCharacteristicPermission
-  handle: int | None = None
+  handle: int = 0
   descriptors: Sequence[GattDescriptor] = ()
 
   @classmethod
@@ -646,21 +659,27 @@ class A2dpPlayingStateChanged(JsonDeserializableEvent):
 
 
 @dataclasses.dataclass
+class HeadTrackerAvailableChanged(JsonDeserializableEvent):
+  """OnHeadTrackerAvailableListener.onHeadTrackerAvailableChanged."""
+
+  EVENT_NAME = snippet_constants.HEAD_TRACKER_AVAILABLE_CHANGED
+
+  available: bool = dataclasses.field(
+      metadata={_FIELD: snippet_constants.FIELD_STATE}
+  )
+
+
+@dataclasses.dataclass
+class BluetoothCodecType(JsonDeserializable):
+  """android.bluetooth.BluetoothCodecType."""
+
+  id: int = dataclasses.field(metadata={_FIELD: snippet_constants.FIELD_ID})
+  name: str = dataclasses.field(metadata={_FIELD: snippet_constants.FIELD_NAME})
+
+
+@dataclasses.dataclass
 class A2dpCodecConfiguration(JsonDeserializable):
   """android.bluetooth.BluetoothCodecConfig."""
-
-  @dataclasses.dataclass
-  class ExtendedCodecType(JsonDeserializable):
-    """Extended Codec Type."""
-
-    id: int = dataclasses.field(metadata={_FIELD: snippet_constants.FIELD_ID})
-    name: str = dataclasses.field(
-        metadata={_FIELD: snippet_constants.FIELD_NAME}
-    )
-    codec_type: int | None = dataclasses.field(
-        default=None,
-        metadata={_FIELD: snippet_constants.CODEC_TYPE},
-    )
 
   codec_type: android_constants.A2dpCodecType | None = dataclasses.field(
       default=None,
@@ -679,11 +698,11 @@ class A2dpCodecConfiguration(JsonDeserializable):
   priority: int | None = dataclasses.field(
       default=None, metadata={_FIELD: snippet_constants.PRIORITY}
   )
-  extended_codec_type: ExtendedCodecType | None = dataclasses.field(
+  extended_codec_type: BluetoothCodecType | None = dataclasses.field(
       default=None,
       metadata={
           _FIELD: snippet_constants.EXTENDED_CODEC_TYPE,
-          _MAPPER: ExtendedCodecType.from_mapping,
+          _MAPPER: BluetoothCodecType.from_mapping,
       },
   )
   sample_rate: android_constants.A2dpSampleRate | None = dataclasses.field(
@@ -753,6 +772,20 @@ class AdapterStateChanged(JsonDeserializableEvent):
   )
 
   EVENT_NAME = snippet_constants.ADAPTER_STATE_CHANGED
+
+
+@dataclasses.dataclass
+class DiscoveryStarted(JsonDeserializableEvent):
+  """android.bluetooth.adapter.action.DISCOVERY_STARTED."""
+
+  EVENT_NAME = snippet_constants.DISCOVERY_STARTED
+
+
+@dataclasses.dataclass
+class DiscoveryFinished(JsonDeserializableEvent):
+  """android.bluetooth.adapter.action.DISCOVERY_FINISHED."""
+
+  EVENT_NAME = snippet_constants.DISCOVERY_FINISHED
 
 
 @dataclasses.dataclass
@@ -827,6 +860,8 @@ class AudioDeviceAdded(JsonDeserializableEvent):
   Attributes:
     address: MAC address of remote device in string format.
     device_type: type of audio device.
+    is_source: whether the audio device is a source (input) device.
+    is_sink: whether the audio device is a sink (output) device.
   """
 
   address: str = dataclasses.field(
@@ -838,8 +873,48 @@ class AudioDeviceAdded(JsonDeserializableEvent):
           _MAPPER: android_constants.AudioDeviceType,
       }
   )
+  is_source: bool = dataclasses.field(
+      default=False,
+      metadata={_FIELD: snippet_constants.FIELD_IS_SOURCE},
+  )
+  is_sink: bool = dataclasses.field(
+      default=False,
+      metadata={_FIELD: snippet_constants.FIELD_IS_SINK},
+  )
 
   EVENT_NAME = snippet_constants.AUDIO_DEVICE_ADDED
+
+
+@dataclasses.dataclass
+class AudioDeviceRemoved(JsonDeserializableEvent):
+  """android.media.AudioDeviceCallback.onAudioDevicesRemoved.
+
+  Attributes:
+    address: MAC address of remote device in string format.
+    device_type: type of audio device.
+    is_source: whether the audio device is a source (input) device.
+    is_sink: whether the audio device is a sink (output) device.
+  """
+
+  address: str = dataclasses.field(
+      metadata={_FIELD: snippet_constants.FIELD_DEVICE}
+  )
+  device_type: android_constants.AudioDeviceType = dataclasses.field(
+      metadata={
+          _FIELD: snippet_constants.FIELD_TYPE,
+          _MAPPER: android_constants.AudioDeviceType,
+      }
+  )
+  is_source: bool = dataclasses.field(
+      default=False,
+      metadata={_FIELD: snippet_constants.FIELD_IS_SOURCE},
+  )
+  is_sink: bool = dataclasses.field(
+      default=False,
+      metadata={_FIELD: snippet_constants.FIELD_IS_SINK},
+  )
+
+  EVENT_NAME = snippet_constants.AUDIO_DEVICE_REMOVED
 
 
 @dataclasses.dataclass
@@ -848,6 +923,8 @@ class AudioDeviceInfo:
 
   address: str
   device_type: android_constants.AudioDeviceType
+  is_source: bool = False
+  is_sink: bool = False
 
   @classmethod
   def from_mapping(cls, mapping: Mapping[str, Any]) -> AudioDeviceInfo:
@@ -856,6 +933,8 @@ class AudioDeviceInfo:
         device_type=android_constants.AudioDeviceType(
             mapping[snippet_constants.FIELD_TYPE]
         ),
+        is_source=mapping.get(snippet_constants.FIELD_IS_SOURCE, False),
+        is_sink=mapping.get(snippet_constants.FIELD_IS_SINK, False),
     )
 
 
@@ -1011,6 +1090,58 @@ class GattDescriptorWriteRequest(JsonDeserializableEvent):
 
 
 @dataclasses.dataclass
+class GattDescriptorReadRequest(JsonDeserializableEvent):
+  """android.bluetooth.BluetoothGattServerCallback.onDescriptorReadRequest."""
+
+  address: str = dataclasses.field(
+      metadata={_FIELD: snippet_constants.FIELD_DEVICE}
+  )
+  descriptor_uuid: str = dataclasses.field(
+      metadata={_FIELD: snippet_constants.FIELD_UUID}
+  )
+  characteristic_handle: int = dataclasses.field(
+      metadata={_FIELD: snippet_constants.FIELD_HANDLE}
+  )
+  request_id: int = dataclasses.field(
+      metadata={_FIELD: snippet_constants.GATT_FIELD_REQUEST_ID}
+  )
+  offset: int = dataclasses.field(
+      metadata={_FIELD: snippet_constants.GATT_FIELD_OFFSET}
+  )
+
+  EVENT_NAME = snippet_constants.GATT_SERVER_DESCRIPTOR_READ_REQUEST
+
+
+@dataclasses.dataclass
+class GattExecuteWrite(JsonDeserializableEvent):
+  """android.bluetooth.BluetoothGattServerCallback.onExecuteWrite."""
+
+  address: str = dataclasses.field(
+      metadata={_FIELD: snippet_constants.FIELD_DEVICE}
+  )
+  request_id: int = dataclasses.field(
+      metadata={_FIELD: snippet_constants.GATT_FIELD_REQUEST_ID}
+  )
+  execute: bool = dataclasses.field(
+      metadata={_FIELD: snippet_constants.GATT_FIELD_EXECUTE}
+  )
+
+  EVENT_NAME = snippet_constants.GATT_SERVER_EXECUTE_WRITE
+
+
+@dataclasses.dataclass
+class GattServerMtuChanged(JsonDeserializableEvent):
+  """android.bluetooth.BluetoothGattServerCallback.onMtuChanged."""
+
+  address: str = dataclasses.field(
+      metadata={_FIELD: snippet_constants.FIELD_DEVICE}
+  )
+  mtu: int = dataclasses.field(metadata={_FIELD: snippet_constants.FIELD_MTU})
+
+  EVENT_NAME = snippet_constants.GATT_SERVER_MTU_CHANGED
+
+
+@dataclasses.dataclass
 class GattCharacteristicChanged(JsonDeserializableEvent):
   """android.bluetooth.BluetoothGattCallback.onCharacteristicChanged."""
 
@@ -1025,6 +1156,59 @@ class GattCharacteristicChanged(JsonDeserializableEvent):
   )
 
   EVENT_NAME = snippet_constants.GATT_CHARACTERISTIC_CHANGED
+
+
+@dataclasses.dataclass
+class GattDescriptorRead(JsonDeserializableEvent):
+  """android.bluetooth.BluetoothGattCallback.onDescriptorRead."""
+
+  address: str = dataclasses.field(
+      metadata={_FIELD: snippet_constants.FIELD_DEVICE}
+  )
+  handle: int = dataclasses.field(
+      metadata={_FIELD: snippet_constants.FIELD_HANDLE}
+  )
+  uuid: str = dataclasses.field(metadata={_FIELD: snippet_constants.FIELD_UUID})
+  status: int = dataclasses.field(
+      metadata={_FIELD: snippet_constants.FIELD_STATUS}
+  )
+  value: bytes = dataclasses.field(
+      metadata={_FIELD: snippet_constants.FIELD_VALUE, _MAPPER: bytes}
+  )
+
+  EVENT_NAME = snippet_constants.GATT_DESCRIPTOR_READ
+
+
+@dataclasses.dataclass
+class GattDescriptorWrite(JsonDeserializableEvent):
+  """android.bluetooth.BluetoothGattCallback.onDescriptorWrite."""
+
+  address: str = dataclasses.field(
+      metadata={_FIELD: snippet_constants.FIELD_DEVICE}
+  )
+  handle: int = dataclasses.field(
+      metadata={_FIELD: snippet_constants.FIELD_HANDLE}
+  )
+  uuid: str = dataclasses.field(metadata={_FIELD: snippet_constants.FIELD_UUID})
+  status: int = dataclasses.field(
+      metadata={_FIELD: snippet_constants.FIELD_STATUS}
+  )
+
+  EVENT_NAME = snippet_constants.GATT_DESCRIPTOR_WRITE
+
+
+@dataclasses.dataclass
+class GattReliableWriteCompleted(JsonDeserializableEvent):
+  """android.bluetooth.BluetoothGattCallback.onReliableWriteCompleted."""
+
+  address: str = dataclasses.field(
+      metadata={_FIELD: snippet_constants.FIELD_DEVICE}
+  )
+  status: int = dataclasses.field(
+      metadata={_FIELD: snippet_constants.FIELD_STATUS}
+  )
+
+  EVENT_NAME = snippet_constants.GATT_RELIABLE_WRITE_COMPLETED
 
 
 @dataclasses.dataclass
@@ -1173,6 +1357,29 @@ class HidDeviceAppStatusChanged(JsonDeserializableEvent):
 
 
 @dataclasses.dataclass
+class HidDeviceGetReportRequest(JsonDeserializableEvent):
+  """BluetoothHidDevice.Callback#onGetReport.
+
+  Attributes:
+    address: MAC address of remote device in string format.
+    type: Report type.
+    id: Report ID.
+    buffer_size: Buffer size.
+  """
+
+  address: str = dataclasses.field(
+      metadata={_FIELD: snippet_constants.FIELD_DEVICE}
+  )
+  type: int = dataclasses.field(metadata={_FIELD: snippet_constants.FIELD_TYPE})
+  id: int = dataclasses.field(metadata={_FIELD: snippet_constants.FIELD_ID})
+  buffer_size: int = dataclasses.field(
+      metadata={_FIELD: snippet_constants.FIELD_BUFFER_SIZE}
+  )
+
+  EVENT_NAME = snippet_constants.HID_DEVICE_ON_GET_REPORT
+
+
+@dataclasses.dataclass
 class ProfileActiveDeviceChanged(JsonDeserializableEvent):
   """android.bluetooth.*.profile.action.ACTIVE_DEVICE_CHANGED."""
 
@@ -1288,6 +1495,19 @@ class PlayerRepeatModeChanged(JsonDeserializableEvent):
   EVENT_NAME = snippet_constants.PLAYER_REPEAT_MODE_CHANGED
 
   mode: int = dataclasses.field(metadata={_FIELD: snippet_constants.MODE})
+
+
+@dataclasses.dataclass
+class TakStateChanged(JsonDeserializableEvent):
+  """TakCallback.onTakSessionStatusChanged."""
+
+  EVENT_NAME = snippet_constants.TAK_STATE_CHANGED
+
+  device: str = dataclasses.field(
+      metadata={_FIELD: snippet_constants.FIELD_DEVICE})
+  uuid: str = dataclasses.field(default='', metadata={_FIELD: 'uuid'})
+  state: int = dataclasses.field(default=0, metadata={_FIELD: 'state'})
+  status: int = dataclasses.field(default=0, metadata={_FIELD: 'status'})
 
 
 @dataclasses.dataclass
@@ -1691,8 +1911,11 @@ class HidHostReport(JsonDeserializableEvent):
   address: str = dataclasses.field(
       metadata={_FIELD: snippet_constants.FIELD_DEVICE}
   )
-  report: bytearray = dataclasses.field(
-      metadata={_FIELD: snippet_constants.FIELD_REPORT}
+  report: bytes = dataclasses.field(
+      metadata={
+          _FIELD: snippet_constants.FIELD_REPORT,
+          _MAPPER: bytes,
+      }
   )
   EVENT_NAME = snippet_constants.HID_HOST_REPORT
 
@@ -2043,6 +2266,7 @@ class MediaItem:
   artist: str | None = None
   album: str | None = None
   uri: str | None = None
+  artwork_uri: str | None = None
   browsable: bool | None = None
   playable: bool | None = None
   children: Sequence[MediaItem] = ()
@@ -2134,8 +2358,42 @@ def find_characteristic_by_uuid(
   return characteristic
 
 
-class PhoneCall:
+class PhoneCall(CallbackHandler):
   """Context managable phone call wrapper."""
+
+  @dataclasses.dataclass
+  class CallEndpoint(JsonDeserializable):
+    """Call endpoint."""
+
+    type: android_constants.CallEndpointType = dataclasses.field(
+        metadata={
+            _FIELD: snippet_constants.FIELD_TYPE,
+            _MAPPER: android_constants.CallEndpointType,
+        }
+    )
+    name: str = dataclasses.field(
+        metadata={
+            _FIELD: snippet_constants.FIELD_NAME,
+        }
+    )
+    identifier: str = dataclasses.field(
+        metadata={
+            _FIELD: snippet_constants.FIELD_ID,
+        }
+    )
+
+  @dataclasses.dataclass
+  class CallEndpointChanged(JsonDeserializableEvent):
+    """Call endpoint changed event."""
+
+    EVENT_NAME = snippet_constants.CALL_ENDPOINT_CHANGED
+
+    endpoint: PhoneCall.CallEndpoint = dataclasses.field(
+        metadata={
+            _FIELD: snippet_constants.FIELD_ENDPOINT,
+            _MAPPER: lambda x: PhoneCall.CallEndpoint.from_mapping(x),  # pylint: disable=unnecessary-lambda
+        }
+    )
 
   def __init__(
       self,
@@ -2152,37 +2410,35 @@ class PhoneCall:
         caller_number: Number of caller. e.g., "+16502530000"(Googleplex).
         direction: Direction of the phone call.
     """
-    self.snippet = snippet
-    self.cookie = snippet.addCall(
-        caller_name,
-        f'tel:{caller_number}',
-        direction == constants.Direction.INCOMING,
+    super().__init__(
+        snippet=snippet,
+        handler=snippet.addCall(
+            caller_name,
+            f'tel:{caller_number}',
+            direction == constants.Direction.INCOMING,
+        ),
+        on_close=snippet.disconnectCall,
     )
 
   def answer(self) -> None:
     """Answers the phone call."""
-    self.snippet.answerCall(self.cookie)
-
-  def close(self) -> None:
-    """Closes the phone call."""
-    self.snippet.disconnectCall(self.cookie)
+    self.snippet.answerCall(self.handler.callback_id)
 
   async def request_call_endpoint_switch(
-      self, call_endpoint_type: android_constants.CallEndpointType | int
+      self,
+      endpoint_type: android_constants.CallEndpointType | None = None,
+      endpoint_identifier: str | None = None,
   ) -> None:
     """Requests call endpoint switch."""
+    if endpoint_type is None and endpoint_identifier is None:
+      raise ValueError(
+          'Either endpoint_type or endpoint_identifier must be set.'
+      )
     await asyncio.to_thread(
         lambda: self.snippet.requestCallEndpointSwitch(
-            self.cookie, call_endpoint_type
+            self.handler.callback_id, endpoint_type, endpoint_identifier
         )
     )
-
-  def __enter__(self) -> Self:
-    return self
-
-  def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
-    with contextlib.suppress(mobly.snippet.errors.ApiError):
-      self.close()
 
 
 @dataclasses.dataclass
@@ -2995,6 +3251,80 @@ class GattClient(CallbackHandler):
         android_constants.GattStatus.SUCCESS,
     )
 
+  async def read_descriptor(
+      self, characteristic_handle: int, descriptor_uuid: str
+  ) -> bytes:
+    """Reads value of a descriptor.
+
+    Args:
+      characteristic_handle: characteristic handle.
+      descriptor_uuid: descriptor UUID.
+
+    Returns:
+      Value of descriptor in bytes.
+    """
+    asserts.assert_true(
+        self.snippet.gattReadDescriptor(
+            self.handler.callback_id, characteristic_handle, descriptor_uuid
+        ),
+        'Unable to read descriptor.',
+    )
+    event = await self.wait_for_event(GattDescriptorRead)
+    asserts.assert_equal(
+        event.status,
+        android_constants.GattStatus.SUCCESS,
+    )
+    return event.value
+
+  async def write_descriptor(
+      self, characteristic_handle: int, descriptor_uuid: str, value: bytes
+  ) -> None:
+    """Writes value to a descriptor.
+
+    Args:
+      characteristic_handle: characteristic handle.
+      descriptor_uuid: descriptor UUID.
+      value: value to write in bytes.
+    """
+    asserts.assert_equal(
+        self.snippet.gattWriteDescriptor(
+            self.handler.callback_id,
+            characteristic_handle,
+            descriptor_uuid,
+            list(value),
+        ),
+        android_constants.GattStatus.SUCCESS,
+    )
+    event = await self.wait_for_event(GattDescriptorWrite)
+    asserts.assert_equal(
+        event.status,
+        android_constants.GattStatus.SUCCESS,
+    )
+
+  async def begin_reliable_write(self) -> None:
+    """Begins a reliable write transaction."""
+    asserts.assert_true(
+        self.snippet.gattBeginReliableWrite(self.handler.callback_id),
+        'Unable to begin reliable write.',
+    )
+
+  async def execute_reliable_write(self) -> None:
+    """Executes the reliable write transaction."""
+    self.handler.getAll(snippet_constants.GATT_RELIABLE_WRITE_COMPLETED)
+    asserts.assert_true(
+        self.snippet.gattExecuteReliableWrite(self.handler.callback_id),
+        'Unable to execute reliable write.',
+    )
+    event = await self.wait_for_event(GattReliableWriteCompleted)
+    asserts.assert_equal(
+        event.status,
+        android_constants.GattStatus.SUCCESS,
+    )
+
+  async def abort_reliable_write(self) -> None:
+    """Aborts the reliable write transaction."""
+    self.snippet.gattAbortReliableWrite(self.handler.callback_id)
+
   async def request_mtu(self, mtu: int) -> int:
     """Requests MTU of a GATT client.
 
@@ -3151,6 +3481,20 @@ class GattServer(CallbackHandler):
     asserts.assert_equal(
         service_added_event.data[snippet_constants.FIELD_STATUS],
         android_constants.GattStatus.SUCCESS,
+    )
+
+  async def remove_service(self, service_uuid: str) -> None:
+    """Removes a GATT service from GATT server.
+
+    Args:
+      service_uuid: UUID of service to be removed.
+    """
+    asserts.assert_true(
+        self.snippet.gattServerRemoveService(
+            self.handler.callback_id,
+            service_uuid,
+        ),
+        'Unable to remove service.',
     )
 
   @property
@@ -3400,6 +3744,36 @@ class DistanceMeasurement(CallbackHandler):
     self.snippet.stopDistanceMeasurement(self.handler.callback_id)
 
 
+class TakSession(CallbackHandler):
+  """TAK session control block."""
+
+  @classmethod
+  def create(
+      cls: Type[Self],
+      snippet: snippet_stub.BluetoothSnippet,
+      address: str,
+      key: list[int],
+      uuid: str,
+  ) -> Self:
+    """Start a TAK session.
+
+    Args:
+      snippet: Snippet client instance.
+      address: The MAC address of the remote device.
+      key: The TAK key (list of 16 ints).
+      uuid: The TAK UUID string.
+
+    Returns:
+      The TAK session.
+    """
+    handler = snippet.startTakSession(address, key, uuid)
+    return cls(snippet=snippet, handler=handler)
+
+  @override
+  def close(self) -> None:
+    pass
+
+
 class SnippetWrapper:
   """Wrapper for BluetoothSnippet."""
 
@@ -3433,6 +3807,17 @@ class SnippetWrapper:
       The distance measurement session.
     """
     return DistanceMeasurement.create(self.snippet, parameters)
+
+  def start_tak_session(
+      self,
+      address: str,
+      key: bytes | list[int],
+      uuid: str,
+  ) -> TakSession:
+    """Starts a TAK session."""
+    if isinstance(key, bytes):
+      key = list(key)
+    return TakSession.create(self.snippet, address, key, uuid)
 
   def start_scanning(
       self,
@@ -3825,10 +4210,17 @@ class SnippetWrapper:
     Returns:
       OOB data.
     """
-    return OobData(**{
-        key: bytes(value) if isinstance(value, list) else value
-        for key, value in self.snippet.generateLocalOobData(transport).items()
-    })  # type: ignore[arg-type]
+    return OobData(
+        **cast(
+            dict[str, Any],
+            {
+                key: bytes(value) if isinstance(value, list) else value
+                for key, value in self.snippet.generateLocalOobData(
+                    transport
+                ).items()
+            },
+        )
+    )  # type: ignore[arg-type]
 
   def get_all_hap_preset_info(self, device: str) -> dict[int, str]:
     """Gets all HAP preset info.
@@ -3913,3 +4305,16 @@ class SnippetWrapper:
     return self.snippet.setA2dpCodecConfig(
         address, _make_json_object(codec_config)
     )
+
+  def get_available_call_endpoints(self) -> list[PhoneCall.CallEndpoint]:
+    """Gets available call endpoints."""
+    endpoints = self.snippet.getAvailableCallEndpoints()
+    return [PhoneCall.CallEndpoint.from_mapping(e) for e in endpoints]
+
+  def get_a2dp_supported_codec_types(self) -> list[BluetoothCodecType]:
+    """Gets the A2DP supported codec types."""
+
+    return [
+        BluetoothCodecType.from_mapping(codec_type)
+        for codec_type in self.snippet.getA2dpSupportedCodecTypes()
+    ]

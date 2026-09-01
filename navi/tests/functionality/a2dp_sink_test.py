@@ -103,9 +103,14 @@ class A2dpSinkTest(navi_test_base.TwoDevicesTestBase):
     )
     if not component:
       self.fail("No media browser service found")
-    self.bluetooth_package, self.bluetooth_browser_service = component.split(
-        "/"
+    component_line = component.strip().splitlines()[0]
+    self.bluetooth_package, self.bluetooth_browser_service = (
+        component_line.strip().split("/")
     )
+    if self.bluetooth_browser_service.startswith("."):
+      self.bluetooth_browser_service = (
+          self.bluetooth_package + self.bluetooth_browser_service
+      )
 
   @override
   async def async_setup_test(self) -> None:
@@ -822,8 +827,8 @@ class A2dpSinkTest(navi_test_base.TwoDevicesTestBase):
     ref_avrcp_protocol = ref_a2dp_source_device.avrcp_protocol
     ref_avrcp_protocol.delegate = avrcp.Delegate(
         supported_events=[
-            avrcp.EventId.TRACK_CHANGED,  # pytype: disable=wrong-arg-types
-            avrcp.EventId.AVAILABLE_PLAYERS_CHANGED,  # pytype: disable=wrong-arg-types
+            avrcp.EventId.TRACK_CHANGED,
+            avrcp.EventId.AVAILABLE_PLAYERS_CHANGED,
         ]
     )
 
@@ -897,7 +902,7 @@ class A2dpSinkTest(navi_test_base.TwoDevicesTestBase):
 
     ref_avrcp_protocol.delegate = Delegate(
         supported_events=[
-            avrcp.EventId.PLAYER_APPLICATION_SETTING_CHANGED,  # pytype: disable=wrong-arg-types
+            avrcp.EventId.PLAYER_APPLICATION_SETTING_CHANGED,
         ],
         supported_player_app_settings={
             avrcp.ApplicationSetting.AttributeId.REPEAT_MODE: [
@@ -974,7 +979,7 @@ class A2dpSinkTest(navi_test_base.TwoDevicesTestBase):
       ] = ref_repeat_mode
       ref_avrcp_protocol.notify_player_application_settings_changed([
           avrcp.PlayerApplicationSettingChangedEvent.Setting(
-              avrcp.ApplicationSetting.AttributeId.REPEAT_MODE,  # pytype: disable=wrong-arg-types
+              avrcp.ApplicationSetting.AttributeId.REPEAT_MODE,
               ref_repeat_mode,
           )
       ])
@@ -1006,7 +1011,7 @@ class A2dpSinkTest(navi_test_base.TwoDevicesTestBase):
       ] = ref_shuffle_mode
       ref_avrcp_protocol.notify_player_application_settings_changed([
           avrcp.PlayerApplicationSettingChangedEvent.Setting(
-              avrcp.ApplicationSetting.AttributeId.SHUFFLE_ON_OFF,  # pytype: disable=wrong-arg-types
+              avrcp.ApplicationSetting.AttributeId.SHUFFLE_ON_OFF,
               ref_shuffle_mode,
           )
       ])
@@ -1043,7 +1048,7 @@ class A2dpSinkTest(navi_test_base.TwoDevicesTestBase):
 
     ref_avrcp_protocol.delegate = Delegate(
         supported_events=[
-            avrcp.EventId.PLAYER_APPLICATION_SETTING_CHANGED,  # pytype: disable=wrong-arg-types
+            avrcp.EventId.PLAYER_APPLICATION_SETTING_CHANGED,
         ],
         supported_player_app_settings={
             avrcp.ApplicationSetting.AttributeId.REPEAT_MODE: [

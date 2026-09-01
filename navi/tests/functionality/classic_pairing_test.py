@@ -123,3 +123,52 @@ class ClassicPairingTest(navi_test_base.TwoDevicesTestBase):
     self.logger.info('[REF] Wait for connection complete.')
     async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
       await ref_connection_task
+
+  async def test_bond_retention_after_bluetooth_restart(self) -> None:
+    """Tests bond retention after Bluetooth restart on DUT.
+
+    Test steps:
+      1. Bond DUT and REF over BR/EDR.
+      2. Restart Bluetooth on DUT.
+      3. Verify the bond remains present on DUT.
+      4. Reconnect and verify the link is encrypted.
+    """
+    self.logger.info('Step 1: Bond DUT and REF over BR/EDR.')
+    await self.classic_connect_and_pair()
+    self.assertIn(self.ref.address, self.dut.bt.getBondedDevices())
+
+    self.logger.info('Step 2: Restart Bluetooth on DUT.')
+    self.dut.bt.disable()
+    self.dut.bt.waitForAdapterState(android_constants.AdapterState.OFF)
+    self.dut.bt.enable()
+    self.dut.bt.waitForAdapterState(android_constants.AdapterState.ON)
+
+    self.logger.info('Step 3: Verify the bond remains present on DUT.')
+    self.assertIn(self.ref.address, self.dut.bt.getBondedDevices())
+
+    self.logger.info('Step 4: Reconnect and verify the link is encrypted.')
+    self.logger.info('[REF] Reconnect BR/EDR to DUT.')
+    ref_conn = await self.ref.device.connect(
+        self.dut.address,
+        transport=core.BT_BR_EDR_TRANSPORT,
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
+
+    dut_cb = self.dut.bl4a.register_callback(bl4a_api.Module.ADAPTER)
+    self.test_case_context.push(dut_cb)
+
+    async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+      self.logger.info('[REF] Trigger authentication.')
+      await ref_conn.authenticate()
+      self.logger.info('[REF] Trigger encryption.')
+      await ref_conn.encrypt()
+
+    self.logger.info('[DUT] Wait for encryption changed.')
+    await dut_cb.wait_for_event(
+        bl4a_api.EncryptionChanged(
+            address=self.ref.address,
+            transport=android_constants.Transport.CLASSIC,
+        ),
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
+    self.assertTrue(ref_conn.is_encrypted)

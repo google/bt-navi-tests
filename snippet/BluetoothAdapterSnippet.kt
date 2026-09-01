@@ -23,6 +23,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothQualityReport
 import android.bluetooth.BondStatus
 import android.bluetooth.OobData
+import android.bluetooth.TakStatus
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
 import android.bluetooth.le.AdvertiseSettings
@@ -182,6 +183,8 @@ class BluetoothAdapterSnippet : Snippet {
         addAction(BluetoothDevice.ACTION_KEY_MISSING)
         addAction(BluetoothDevice.ACTION_NAME_CHANGED)
         addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+        addAction(BluetoothAdapter.ACTION_DISCOVERY_STARTED)
+        addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
       }
     broadcastReceivers[callbackId] =
       object : BroadcastReceiver() {
@@ -269,6 +272,10 @@ class BluetoothAdapterSnippet : Snippet {
                 putString(SnippetConstants.FIELD_DEVICE, device?.address)
                 putInt(SnippetConstants.FIELD_STATE, state)
               }
+            BluetoothAdapter.ACTION_DISCOVERY_STARTED ->
+              postSnippetEvent(callbackId, SnippetConstants.DISCOVERY_STARTED) {}
+            BluetoothAdapter.ACTION_DISCOVERY_FINISHED ->
+              postSnippetEvent(callbackId, SnippetConstants.DISCOVERY_FINISHED) {}
           }
         }
       }
@@ -332,6 +339,31 @@ class BluetoothAdapterSnippet : Snippet {
   /** Gets device of [address]'s alias name. */
   @Rpc(description = "Get alias name of remote device")
   fun getAlias(address: String): String? = bluetoothAdapter.getRemoteDevice(address).alias
+
+  /** Starts a TAK session for a given device. */
+  @AsyncRpc(description = "Start TAK session.")
+  @SuppressLint("NewApi")
+  fun startTakSession(callbackId: String, address: String, keyList: IntArray, uuidStr: String) {
+    val device = bluetoothAdapter.getRemoteDevice(address)
+    val key = keyList.map { it.toByte() }.toByteArray()
+    val uuid = ParcelUuid(UUID.fromString(uuidStr))
+
+    device.startTakSession(
+      key,
+      uuid,
+      context.mainExecutor,
+      object : BluetoothDevice.TakCallback {
+        override fun onTakSessionStatusChanged(device: BluetoothDevice, status: TakStatus) {
+          postSnippetEvent(callbackId, SnippetConstants.TAK_STATE_CHANGED) {
+            putString(SnippetConstants.FIELD_DEVICE, device.address)
+            putString(SnippetConstants.FIELD_UUID, status.uuid.toString())
+            putInt(SnippetConstants.FIELD_STATE, status.state)
+            putInt(SnippetConstants.FIELD_STATUS, status.statusCode)
+          }
+        }
+      },
+    )
+  }
 
   /**
    * Creates bond to a remote device with [address] and [addressType] over [transport], and returns
@@ -615,12 +647,12 @@ class BluetoothAdapterSnippet : Snippet {
 
   /** Stops BLE advertiser with [cookie]. */
   @Rpc(description = "Stop BLE Advertising")
-  fun stopAdvertising(cookie: String) =
+  fun stopAdvertising(cookie: String): Unit? =
     advertisers.remove(cookie)?.let { bluetoothAdapter.bluetoothLeAdvertiser?.stopAdvertising(it) }
 
   /** Stops a BLE advertising set with [cookie]. */
   @Rpc(description = "Stop BLE Advertising Set")
-  fun stopAdvertisingSet(cookie: String) =
+  fun stopAdvertisingSet(cookie: String): Unit? =
     advertisingSets.remove(cookie)?.let {
       bluetoothAdapter.bluetoothLeAdvertiser?.stopAdvertisingSet(it)
     }
@@ -683,6 +715,10 @@ class BluetoothAdapterSnippet : Snippet {
   /** Stops Classic inquiry and returns true if inquiry is successfully stopped. */
   @Rpc(description = "Stop Classic inquiry")
   fun stopInquiry(): Boolean = bluetoothAdapter.cancelDiscovery()
+
+  /** Returns true if the local Bluetooth adapter is currently in the device discovery process. */
+  @Rpc(description = "Check if Classic inquiry/discovery is active")
+  fun isDiscovering(): Boolean = bluetoothAdapter.isDiscovering
 
   /**
    * Sets Phonebook Access Permission to a remote device of [address] and returns true if
@@ -752,7 +788,7 @@ class BluetoothAdapterSnippet : Snippet {
     return bluetoothAdapter.getRemoteDevice(address).getBondStatus(transport)
   }
 
-  companion object {
+  private companion object {
     const val TAG = "BluetoothAdapterSnippet"
     private val BLUETOOTH_ON_OFF_TIMEOUT = 12.seconds
     private val ADVERTISING_START_TIMEOUT = 3.seconds

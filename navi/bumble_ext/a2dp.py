@@ -20,6 +20,8 @@ module majorly refers to the implementation of AOSP:
 * packages/modules/Bluetooth/system/stack/include/
 """
 
+from __future__ import annotations
+
 import asyncio
 from collections.abc import Callable, Sequence
 import dataclasses
@@ -36,6 +38,7 @@ from bumble import sdp
 
 from navi.bumble_ext import avdtp as avdtp_ext
 from navi.bumble_ext import ogg
+from navi.utils import android_constants
 from navi.utils import constants
 
 
@@ -62,6 +65,109 @@ class LdacChannelMode(enum.IntFlag):
   MONO = 0x04
   DUAL = 0x02
   STEREO = 0x01
+
+
+class LhdcSamplingRate(enum.IntFlag):
+  RATE_44100 = 0x20
+  RATE_48000 = 0x10
+  RATE_96000 = 0x04
+  RATE_192000 = 0x01
+
+
+class LhdcBitsPerSample(enum.IntFlag):
+  BITS_16 = 0x04
+  BITS_24 = 0x02
+  BITS_32 = 0x01
+
+
+class LhdcChannelMode(enum.IntFlag):
+  MONO = 0x04
+  DUAL = 0x02
+  STEREO = 0x01
+
+
+@dataclasses.dataclass(frozen=True)
+class LhdcCodecInformation:
+  """LHDC v5 codec information."""
+
+  sample_rate: LhdcSamplingRate
+  bits_per_sample: LhdcBitsPerSample
+  channel_mode: LhdcChannelMode
+  version: int = 1
+  frame_len_type: int = 0x10  # 5ms
+  max_target_bitrate: int = 0x00  # 1000k
+  min_target_bitrate: int = 0x00  # 64k
+  has_feature_ll: bool = True
+
+  VENDOR_ID: ClassVar[int] = 0x053A
+  CODEC_ID: ClassVar[int] = 0x4C35
+
+  def __bytes__(self) -> bytes:
+    p7 = (
+        (self.min_target_bitrate << 6)
+        | (self.max_target_bitrate << 4)
+        | self.bits_per_sample
+    )
+    p8 = self.frame_len_type | (self.version & 0x0F)
+    p9 = 0
+    if self.has_feature_ll:
+      p9 |= 0x40
+    p10 = 0
+    return struct.pack(
+        '<IHBBBBB',
+        self.VENDOR_ID,
+        self.CODEC_ID,
+        self.sample_rate,
+        p7,
+        p8,
+        p9,
+        p10,
+    )
+
+  @classmethod
+  def from_vendor_info(
+      cls, info: a2dp.VendorSpecificMediaCodecInformation
+  ) -> Self:
+    """Decodes the LHDC codec information from the vendor-specific info.
+
+    Args:
+      info: The vendor-specific info.
+
+    Returns:
+      The LHDC codec information.
+
+    Raises:
+      ValueError: If the vendor ID or codec ID is invalid.
+    """
+    if info.vendor_id != cls.VENDOR_ID:
+      raise ValueError(f'Invalid vendor ID: {info.vendor_id}')
+    if info.codec_id != cls.CODEC_ID:
+      raise ValueError(f'Invalid codec ID: {info.codec_id}')
+
+    sample_rate = info.value[0]
+    p7 = info.value[1]
+    p8 = info.value[2]
+    p9 = info.value[3]
+
+    bits_per_sample = p7 & 0x07
+    max_target_bitrate = (p7 >> 4) & 0x03
+    min_target_bitrate = (p7 >> 6) & 0x03
+
+    version = p8 & 0x0F
+    frame_len_type = p8 & 0x30
+
+    has_feature_ll = bool(p9 & 0x40)
+
+    return cls(
+        sample_rate=LhdcSamplingRate(sample_rate),
+        bits_per_sample=LhdcBitsPerSample(bits_per_sample),
+        channel_mode=LhdcChannelMode.STEREO,
+        version=version,
+        frame_len_type=frame_len_type,
+        max_target_bitrate=max_target_bitrate,
+        min_target_bitrate=min_target_bitrate,
+        has_feature_ll=has_feature_ll,
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -167,6 +273,7 @@ class A2dpCodec(constants.ShortReprEnum):
 
   OPUS = enum.auto()
   LDAC = enum.auto()
+  LHDC = enum.auto()
   APTX_HD = enum.auto()
   APTX = enum.auto()
   AAC = enum.auto()
@@ -261,6 +368,22 @@ class A2dpCodec(constants.ShortReprEnum):
                 channel_mode=LdacChannelMode.STEREO,
             ),
         )
+      case A2dpCodec.LHDC:
+        return avdtp.MediaCodecCapabilities(
+            media_type=avdtp.MediaType.AUDIO,
+            media_codec_type=a2dp.CodecType.NON_A2DP,
+            media_codec_information=LhdcCodecInformation(
+                sample_rate=(
+                    LhdcSamplingRate.RATE_44100
+                    | LhdcSamplingRate.RATE_48000
+                    | LhdcSamplingRate.RATE_96000
+                ),
+                bits_per_sample=(
+                    LhdcBitsPerSample.BITS_16 | LhdcBitsPerSample.BITS_24
+                ),
+                channel_mode=LhdcChannelMode.STEREO,
+            ),
+        )
       case A2dpCodec.OPUS:
         return avdtp.MediaCodecCapabilities(
             media_type=avdtp.MediaType.AUDIO,
@@ -311,6 +434,7 @@ class A2dpCodec(constants.ShortReprEnum):
         A2dpCodec.APTX: AptxCodecInformation.CODEC_ID,
         A2dpCodec.APTX_HD: AptxHdCodecInformation.CODEC_ID,
         A2dpCodec.LDAC: LdacCodecInformation.CODEC_ID,
+        A2dpCodec.LHDC: LhdcCodecInformation.CODEC_ID,
         A2dpCodec.OPUS: a2dp.OpusMediaCodecInformation.CODEC_ID,
     }[self]
 
@@ -322,6 +446,7 @@ class A2dpCodec(constants.ShortReprEnum):
         A2dpCodec.APTX: AptxCodecInformation.VENDOR_ID,
         A2dpCodec.APTX_HD: AptxHdCodecInformation.VENDOR_ID,
         A2dpCodec.LDAC: LdacCodecInformation.VENDOR_ID,
+        A2dpCodec.LHDC: LhdcCodecInformation.VENDOR_ID,
         A2dpCodec.OPUS: a2dp.OpusMediaCodecInformation.VENDOR_ID,
     }[self]
 
@@ -333,7 +458,20 @@ class A2dpCodec(constants.ShortReprEnum):
         A2dpCodec.APTX: a2dp.CodecType.NON_A2DP,
         A2dpCodec.APTX_HD: a2dp.CodecType.NON_A2DP,
         A2dpCodec.LDAC: a2dp.CodecType.NON_A2DP,
+        A2dpCodec.LHDC: a2dp.CodecType.NON_A2DP,
         A2dpCodec.OPUS: a2dp.CodecType.NON_A2DP,
+    }[self]
+
+  @property
+  def android_codec_id(self) -> android_constants.BluetoothCodecId:
+    return {
+        A2dpCodec.SBC: android_constants.BluetoothCodecId.SBC,
+        A2dpCodec.AAC: android_constants.BluetoothCodecId.AAC,
+        A2dpCodec.APTX: android_constants.BluetoothCodecId.APTX,
+        A2dpCodec.APTX_HD: android_constants.BluetoothCodecId.APTX_HD,
+        A2dpCodec.LDAC: android_constants.BluetoothCodecId.LDAC,
+        A2dpCodec.LHDC: android_constants.BluetoothCodecId.LHDC_V5,
+        A2dpCodec.OPUS: android_constants.BluetoothCodecId.OPUS,
     }[self]
 
 
@@ -570,6 +708,51 @@ def select_configuration(
               ),
           ),
       ]
+    case LhdcCodecInformation():
+      if isinstance(remote_info, a2dp.VendorSpecificMediaCodecInformation):
+        remote_info = LhdcCodecInformation.from_vendor_info(remote_info)
+      elif not isinstance(remote_info, LhdcCodecInformation):
+        raise TypeError('Incompatible remote capabilities for LHDC')
+      return [
+          avdtp.ServiceCapabilities(
+              service_category=avdtp.AVDTP_MEDIA_TRANSPORT_SERVICE_CATEGORY
+          ),
+          avdtp.MediaCodecCapabilities(
+              media_type=avdtp.MediaType.AUDIO,
+              media_codec_type=a2dp.CodecType.NON_A2DP,
+              media_codec_information=LhdcCodecInformation(
+                  sample_rate=LhdcSamplingRate(
+                      select_highest_flag(
+                          local_info.sample_rate & remote_info.sample_rate,
+                          [
+                              LhdcSamplingRate.RATE_44100,
+                              LhdcSamplingRate.RATE_48000,
+                              LhdcSamplingRate.RATE_96000,
+                              LhdcSamplingRate.RATE_192000,
+                          ],
+                      )
+                  ),
+                  bits_per_sample=LhdcBitsPerSample(
+                      select_highest_flag(
+                          local_info.bits_per_sample
+                          & remote_info.bits_per_sample,
+                          [
+                              LhdcBitsPerSample.BITS_16,
+                              LhdcBitsPerSample.BITS_24,
+                              LhdcBitsPerSample.BITS_32,
+                          ],
+                      )
+                  ),
+                  channel_mode=LhdcChannelMode.STEREO,
+                  version=local_info.version,
+                  frame_len_type=local_info.frame_len_type,
+                  max_target_bitrate=local_info.max_target_bitrate,
+                  min_target_bitrate=local_info.min_target_bitrate,
+                  has_feature_ll=local_info.has_feature_ll
+                  & remote_info.has_feature_ll,
+              ),
+          ),
+      ]
     case a2dp.OpusMediaCodecInformation():
       if not isinstance(remote_info, a2dp.OpusMediaCodecInformation):
         raise TypeError('Incompatible remote capabilities for OPUS')
@@ -653,6 +836,12 @@ def register_sink_buffer(
       @sink.on(avdtp.LocalSink.EVENT_RTP_PACKET)
       def on_rtp_packet_sbc_ldac(packet: avdtp.MediaPacket) -> None:
         buffer.extend(packet.payload[1:])
+
+    case A2dpCodec.LHDC:
+
+      @sink.on(avdtp.LocalSink.EVENT_RTP_PACKET)
+      def on_rtp_packet_lhdc(packet: avdtp.MediaPacket) -> None:
+        buffer.extend(packet.payload)
 
     case A2dpCodec.AAC:
 
@@ -879,7 +1068,7 @@ class SourceSdpRecord:
   async def find(
       cls,
       connection: device_lib.Connection,
-  ) -> list[Self]:
+  ) -> list[SourceSdpRecord]:
     """Searches for A2DP source SDP records from remote device.
 
     Args:
@@ -888,7 +1077,7 @@ class SourceSdpRecord:
     Returns:
         A list of A2DP source SDP records.
     """
-    records = []
+    records: list[SourceSdpRecord] = []
     async with sdp.Client(connection) as sdp_client:
       search_result = await sdp_client.search_attributes(
           uuids=[core.BT_AUDIO_SOURCE_SERVICE],
@@ -1019,7 +1208,7 @@ class SinkSdpRecord:
   async def find(
       cls,
       connection: device_lib.Connection,
-  ) -> list[Self]:
+  ) -> list[SinkSdpRecord]:
     """Searches for A2DP sink SDP records from remote device.
 
     Args:
@@ -1028,7 +1217,7 @@ class SinkSdpRecord:
     Returns:
         A list of A2DP source SDP records.
     """
-    records = []
+    records: list[SinkSdpRecord] = []
     async with sdp.Client(connection) as sdp_client:
       search_result = await sdp_client.search_attributes(
           uuids=[core.BT_AUDIO_SINK_SERVICE],

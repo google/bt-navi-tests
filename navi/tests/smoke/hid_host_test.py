@@ -16,7 +16,6 @@
 
 import asyncio
 import contextlib
-import enum
 import struct
 
 from bumble import core
@@ -34,18 +33,6 @@ from navi.utils import input as input_utils
 
 _DEFAULT_STEP_TIMEOUT_SECONDS = 10.0
 _VIDEO_SERVICE_NAME = "video"
-
-
-class AndroidProtocolMode(enum.IntEnum):
-  """Android Protocol modes.
-
-  Android framework inverts the USB HID protocol mode constants.
-  Bumble: BOOT = 0, REPORT = 1
-  Android API : REPORT = 0, BOOT = 1
-  """
-
-  REPORT_PROTOCOL = 0
-  BOOT_PROTOCOL = 1
 
 
 class Delegate(hid.Device.Delegate):
@@ -396,9 +383,6 @@ class HidHostTest(navi_test_base.TwoDevicesTestBase):
             bl4a_api.Module.ADAPTER
         ) as dut_adapter_cb,
     ):
-      # TODO: Remove the flag once the flag is merged.
-      self.skipTest("b/460703858 - Wait for the flag to be alawys on.")
-
       self.logger.info("[REF] Virtual unplug")
       self.ref_hid_device.virtual_cable_unplug()
 
@@ -623,13 +607,13 @@ class HidHostTest(navi_test_base.TwoDevicesTestBase):
       await dut_hid_cb.wait_for_event(
           bl4a_api.HidHostProtocolModeChanged(
               address=self.ref.address,
-              protocol_mode=AndroidProtocolMode.REPORT_PROTOCOL,
+              protocol_mode=android_constants.HidHostProtocolMode.REPORT,
           )
       )
 
       self.logger.info("[DUT] Set the protocol mode to BOOT_PROTOCOL")
       self.dut.bt.setHidHostProtocolMode(
-          self.ref.address, AndroidProtocolMode.BOOT_PROTOCOL
+          self.ref.address, android_constants.HidHostProtocolMode.BOOT
       )
 
       self.logger.info("[DUT] Verify the protocol mode is set successfully")
@@ -647,14 +631,14 @@ class HidHostTest(navi_test_base.TwoDevicesTestBase):
       await dut_hid_cb.wait_for_event(
           bl4a_api.HidHostProtocolModeChanged(
               address=self.ref.address,
-              protocol_mode=AndroidProtocolMode.BOOT_PROTOCOL,
+              protocol_mode=android_constants.HidHostProtocolMode.BOOT,
           )
       )
 
       self.logger.info("[DUT] Set the protocol mode to REPORT_PROTOCOL")
       self.dut.bt.setHidHostProtocolMode(
           self.ref.address,
-          AndroidProtocolMode.REPORT_PROTOCOL,
+          android_constants.HidHostProtocolMode.REPORT,
       )
 
       self.logger.info("[DUT] Verify the protocol mode is set successfully")
@@ -672,7 +656,7 @@ class HidHostTest(navi_test_base.TwoDevicesTestBase):
       await dut_hid_cb.wait_for_event(
           bl4a_api.HidHostProtocolModeChanged(
               address=self.ref.address,
-              protocol_mode=AndroidProtocolMode.REPORT_PROTOCOL,
+              protocol_mode=android_constants.HidHostProtocolMode.REPORT,
           )
       )
 

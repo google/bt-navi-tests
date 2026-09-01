@@ -30,6 +30,7 @@ import pprint
 import struct
 from typing import Final, Self, TypeAlias, cast
 
+from bumble import core
 from bumble import l2cap
 from bumble import rfcomm
 
@@ -38,6 +39,19 @@ _logger = logging.getLogger(__name__)
 Bearer: TypeAlias = rfcomm.DLC | l2cap.ClassicChannel
 
 FINAL_FLAG = 0x80
+
+
+class Error(core.ProtocolError):
+  """Exception raised for errors in the OBEX protocol."""
+
+  def __init__(self, response_code: ResponseCode, message: str):
+    super().__init__(
+        error_code=response_code,
+        error_namespace='OBEX',
+        error_name=response_code.name,
+        details=message,
+    )
+    self.response_code = response_code
 
 
 class Version(enum.IntEnum):
@@ -78,6 +92,8 @@ class HeaderIdentifier(enum.IntEnum):
   PERMISSIONS = 0xD6
   SINGLE_RESPONSE_MODE = 0x97
   SINGLE_RESPONSE_MODE_PARAMETERS = 0x98
+  IMG_HANDLE = 0x30
+  IMG_DESCRIPTOR = 0x71
 
   def __str__(self) -> str:
     return f'{self.name}[0x{self.value:02X}]'  # pylint: disable=bad-whitespace
@@ -214,7 +230,7 @@ class Header:
         return struct.pack('>BH', self.id, len(value_bytes) + 3) + value_bytes
       case 0b01:
         # 2-bytes big-endian unsigned length(including header), byte sequence
-        return struct.pack('>BH', self.id, len(self.value) + 3) + self.value
+        return struct.pack('>BH', self.id, len(self.value) + 3) + self.value  # pyrefly: ignore[bad-argument-type, unsupported-operation]
       case 0b10:
         # 1 byte quantity
         return struct.pack('>BB', self.id, self.value)
@@ -254,6 +270,8 @@ class Headers:
   permissions: int | None = None
   single_response_mode: int | None = None
   single_response_mode_parameters: int | None = None
+  img_handle: str | None = None
+  img_descriptor: bytes | None = None
 
   @classmethod
   def parse_from(cls, data: bytes, offset: int = 0) -> tuple[int, Self]:

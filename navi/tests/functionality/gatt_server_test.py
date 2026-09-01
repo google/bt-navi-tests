@@ -38,12 +38,44 @@ from navi.utils import bluetooth_constants
 from navi.utils import retry
 
 _DEFAULT_STEP_TIMEOUT_SECONDS = 10.0
+
+_Property = android_constants.GattCharacteristicProperty
+_Permission = android_constants.GattCharacteristicPermission
 _CCCD_UUID = (
     bluetooth_constants.BluetoothAssignedUuid.CLIENT_CHARACTERISTIC_CONFIGURATION_DESCRIPTOR
 )
 
-_Property = android_constants.GattCharacteristicProperty
-_Permission = android_constants.GattCharacteristicPermission
+_TEST_SERVICE_UUID = "9e72cf4a-0100-47c2-835b-efcecf84931b"
+_READ_CHAR_UUID = "9e72cf4a-0200-47c2-835b-efcecf84931b"
+_WRITE_CHAR_UUID = "9e72cf4a-0300-47c2-835b-efcecf84931b"
+_SUBSCRIBE_CHAR_UUID = "9e72cf4a-0400-47c2-835b-efcecf84931b"
+
+_GATT_SERVICE = bl4a_api.GattService(
+    uuid=_TEST_SERVICE_UUID,
+    characteristics=(
+        bl4a_api.GattCharacteristic(
+            uuid=_READ_CHAR_UUID,
+            properties=_Property.READ,
+            permissions=_Permission.READ,
+        ),
+        bl4a_api.GattCharacteristic(
+            uuid=_WRITE_CHAR_UUID,
+            properties=_Property.WRITE | _Property.WRITE_NO_RESPONSE,
+            permissions=_Permission.WRITE,
+        ),
+        bl4a_api.GattCharacteristic(
+            uuid=_SUBSCRIBE_CHAR_UUID,
+            properties=_Property.READ | _Property.NOTIFY | _Property.INDICATE,
+            permissions=_Permission.READ,
+            descriptors=(
+                bl4a_api.GattDescriptor(
+                    uuid=_CCCD_UUID,
+                    permissions=_Permission.READ | _Permission.WRITE,
+                ),
+            ),
+        ),
+    ),
+)
 
 
 class GattServerVentiTest(navi_test_base.TwoDevicesTestBase):
@@ -117,22 +149,11 @@ class GattServerVentiTest(navi_test_base.TwoDevicesTestBase):
       3. Discover services from REF.
       4. Verify added service is discovered.
     """
-    service_uuid = str(uuid.uuid4())
-    characteristic_uuid = str(uuid.uuid4())
     dut_gatt_server = await self._setup_gatt_server(is_private=True)
 
     self.logger.info("[DUT] Add a service.")
     await dut_gatt_server.add_service(
-        bl4a_api.GattService(
-            uuid=service_uuid,
-            characteristics=[
-                bl4a_api.GattCharacteristic(
-                    uuid=characteristic_uuid,
-                    properties=_Property.READ,
-                    permissions=_Permission.READ,
-                )
-            ],
-        ),
+        _GATT_SERVICE
     )
 
     self.logger.info("[REF] Connect to DUT.")
@@ -140,10 +161,10 @@ class GattServerVentiTest(navi_test_base.TwoDevicesTestBase):
 
     async with device.Peer(ref_dut_acl) as peer:
       self.logger.info("[REF] Check services.")
-      services = await peer.discover_services([core.UUID(service_uuid)])
+      services = await peer.discover_services([core.UUID(_TEST_SERVICE_UUID)])
       self.assertLen(services, 1)
       characteristics = await peer.discover_characteristics(
-          [core.UUID(characteristic_uuid)], services[0]
+          [core.UUID(_READ_CHAR_UUID)], services[0]
       )
       self.assertLen(characteristics, 1)
       self.assertEqual(
@@ -163,34 +184,21 @@ class GattServerVentiTest(navi_test_base.TwoDevicesTestBase):
       4. Handle the read request and send response from DUT.
       5. Check read result from REF.
     """
-    # UUID must be random here, otherwise there might be interference when
-    # multiple tests run in the same box.
-    service_uuid = str(uuid.uuid4())
-    characteristic_uuid = str(uuid.uuid4())
     dut_gatt_server = await self._setup_gatt_server(is_private=True)
 
     self.logger.info("[DUT] Add a service.")
     await dut_gatt_server.add_service(
-        bl4a_api.GattService(
-            uuid=service_uuid,
-            characteristics=[
-                bl4a_api.GattCharacteristic(
-                    uuid=characteristic_uuid,
-                    properties=_Property.READ,
-                    permissions=_Permission.READ,
-                )
-            ],
-        ),
+        _GATT_SERVICE
     )
 
     self.logger.info("[REF] Connect to DUT.")
     ref_dut_acl = await self._make_le_connection()
 
     async with device.Peer(ref_dut_acl) as peer:
-      services = await peer.discover_services([core.UUID(service_uuid)])
+      services = await peer.discover_services([core.UUID(_TEST_SERVICE_UUID)])
       self.assertLen(services, 1)
       characteristics = await peer.discover_characteristics(
-          [core.UUID(characteristic_uuid)], services[0]
+          [core.UUID(_READ_CHAR_UUID)], services[0]
       )
       self.assertLen(characteristics, 1)
       characteristic = characteristics[0]
@@ -201,7 +209,7 @@ class GattServerVentiTest(navi_test_base.TwoDevicesTestBase):
       read_request = await dut_gatt_server.wait_for_event(
           event=bl4a_api.GattCharacteristicReadRequest,
           predicate=lambda request: (
-              request.characteristic_uuid == characteristic_uuid
+              request.characteristic_uuid == _READ_CHAR_UUID
           ),
       )
       expected_data = secrets.token_bytes(16)
@@ -235,34 +243,19 @@ class GattServerVentiTest(navi_test_base.TwoDevicesTestBase):
         True, test write with response; otherwise, test write without response.
     """
 
-    # UUID must be random here, otherwise there might be interference when
-    # multiple tests run in the same box.
-    service_uuid = str(uuid.uuid4())
-    characteristic_uuid = str(uuid.uuid4())
     dut_gatt_server = await self._setup_gatt_server(is_private=True)
 
     self.logger.info("[DUT] Add a service.")
-    await dut_gatt_server.add_service(
-        bl4a_api.GattService(
-            uuid=service_uuid,
-            characteristics=[
-                bl4a_api.GattCharacteristic(
-                    uuid=characteristic_uuid,
-                    properties=_Property.WRITE | _Property.WRITE_NO_RESPONSE,
-                    permissions=_Permission.WRITE,
-                )
-            ],
-        ),
-    )
+    await dut_gatt_server.add_service(_GATT_SERVICE)
 
     self.logger.info("[REF] Connect to DUT.")
     ref_dut_acl = await self._make_le_connection()
 
     async with device.Peer(ref_dut_acl) as peer:
-      services = await peer.discover_services([core.UUID(service_uuid)])
+      services = await peer.discover_services([core.UUID(_TEST_SERVICE_UUID)])
       self.assertLen(services, 1)
       characteristics = await peer.discover_characteristics(
-          [core.UUID(characteristic_uuid)], services[0]
+          [core.UUID(_WRITE_CHAR_UUID)], services[0]
       )
       self.assertLen(characteristics, 1)
       characteristic = characteristics[0]
@@ -276,7 +269,7 @@ class GattServerVentiTest(navi_test_base.TwoDevicesTestBase):
       write_request = await dut_gatt_server.wait_for_event(
           event=bl4a_api.GattCharacteristicWriteRequest,
           predicate=lambda request: (
-              request.characteristic_uuid == characteristic_uuid
+              request.characteristic_uuid == _WRITE_CHAR_UUID
           ),
       )
       self.assertEqual(write_request.value, expected_data)
@@ -299,22 +292,26 @@ class GattServerVentiTest(navi_test_base.TwoDevicesTestBase):
       3. Discover a specific service by UUID from REF.
       4. Verify only the targeted service is discovered.
     """
-    target_service_uuid = str(uuid.uuid4())
-    other_service_uuid = str(uuid.uuid4())
 
+    other_service_uuid = "9e72cf4a-0100-47c2-835b-efcecf84931c"
     dut_gatt_server = await self._setup_gatt_server(is_private=True)
 
     self.logger.info("[DUT] Add the target service.")
     await dut_gatt_server.add_service(
-        bl4a_api.GattService(
-            uuid=target_service_uuid,
-        ),
+        _GATT_SERVICE
     )
 
     self.logger.info("[DUT] Add a different service.")
     await dut_gatt_server.add_service(
         bl4a_api.GattService(
             uuid=other_service_uuid,
+            characteristics=(
+                bl4a_api.GattCharacteristic(
+                    uuid=_READ_CHAR_UUID,
+                    properties=_Property.READ,
+                    permissions=_Permission.READ,
+                ),
+            )
         ),
     )
 
@@ -324,12 +321,12 @@ class GattServerVentiTest(navi_test_base.TwoDevicesTestBase):
     async with device.Peer(ref_dut_acl) as peer:
       self.logger.info("[REF] Discover specific service by UUID.")
       # This Bumble API internally sends an ATT Find By Type Value Request
-      services = await peer.discover_service(core.UUID(target_service_uuid))
+      services = await peer.discover_service(core.UUID(_TEST_SERVICE_UUID))
 
       # Verify we only found the target service, and not the other service
       self.assertLen(services, 1)
       self.assertEqual(
-          services[0].uuid, core.UUID(target_service_uuid)
+          services[0].uuid, core.UUID(_TEST_SERVICE_UUID)
       )
 
   async def test_private_server_handle_characteristic_long_read_request(
@@ -347,32 +344,21 @@ class GattServerVentiTest(navi_test_base.TwoDevicesTestBase):
       5. Handle the read blob request, send the rest.
       6. Check read result from REF.
     """
-    service_uuid = str(uuid.uuid4())
-    characteristic_uuid = str(uuid.uuid4())
     dut_gatt_server = await self._setup_gatt_server(is_private=True)
 
     self.logger.info("[DUT] Add a service.")
     await dut_gatt_server.add_service(
-        bl4a_api.GattService(
-            uuid=service_uuid,
-            characteristics=[
-                bl4a_api.GattCharacteristic(
-                    uuid=characteristic_uuid,
-                    properties=_Property.READ,
-                    permissions=_Permission.READ,
-                )
-            ],
-        ),
+        _GATT_SERVICE
     )
 
     self.logger.info("[REF] Connect to DUT.")
     ref_dut_acl = await self._make_le_connection()
 
     async with device.Peer(ref_dut_acl) as peer:
-      services = await peer.discover_services([core.UUID(service_uuid)])
+      services = await peer.discover_services([core.UUID(_TEST_SERVICE_UUID)])
       self.assertLen(services, 1)
       characteristics = await peer.discover_characteristics(
-          [core.UUID(characteristic_uuid)], services[0]
+          [core.UUID(_READ_CHAR_UUID)], services[0]
       )
       self.assertLen(characteristics, 1)
       characteristic = characteristics[0]
@@ -427,9 +413,8 @@ class GattServerVentiTest(navi_test_base.TwoDevicesTestBase):
       4. Handle the 2 read requests sequentially and send responses from DUT.
       5. Check read result from REF.
     """
-    service_uuid = str(uuid.uuid4())
-    char_uuid1 = str(uuid.uuid4())
-    char_uuid2 = str(uuid.uuid4())
+    service_uuid = "9e72cf4a-0100-47c2-835b-efcecf84931d"
+    read_char_uuid2 = "9e72cf4a-0200-47c2-835b-efcecf84931d"
 
     dut_gatt_server = await self._setup_gatt_server(is_private=True)
 
@@ -439,12 +424,12 @@ class GattServerVentiTest(navi_test_base.TwoDevicesTestBase):
             uuid=service_uuid,
             characteristics=[
                 bl4a_api.GattCharacteristic(
-                    uuid=char_uuid1,
+                    uuid=_READ_CHAR_UUID,
                     properties=_Property.READ,
                     permissions=_Permission.READ,
                 ),
                 bl4a_api.GattCharacteristic(
-                    uuid=char_uuid2,
+                    uuid=read_char_uuid2,
                     properties=_Property.READ,
                     permissions=_Permission.READ,
                 ),
@@ -460,14 +445,14 @@ class GattServerVentiTest(navi_test_base.TwoDevicesTestBase):
       self.assertLen(services, 1)
 
       characteristics = await peer.discover_characteristics(
-          [core.UUID(char_uuid1), core.UUID(char_uuid2)], services[0]
+          [core.UUID(_READ_CHAR_UUID), core.UUID(read_char_uuid2)], services[0]
       )
       self.assertLen(characteristics, 2)
       char1 = next(
-          c for c in characteristics if c.uuid == core.UUID(char_uuid1)
+          c for c in characteristics if c.uuid == core.UUID(_READ_CHAR_UUID)
       )
       char2 = next(
-          c for c in characteristics if c.uuid == core.UUID(char_uuid2)
+          c for c in characteristics if c.uuid == core.UUID(read_char_uuid2)
       )
 
       self.logger.info("[REF] Send read multiple variable request.")
@@ -479,7 +464,7 @@ class GattServerVentiTest(navi_test_base.TwoDevicesTestBase):
       self.logger.info("[DUT] Handle first read request.")
       read_request1 = await dut_gatt_server.wait_for_event(
           event=bl4a_api.GattCharacteristicReadRequest,
-          predicate=lambda req: req.characteristic_uuid == char_uuid1,
+          predicate=lambda req: req.characteristic_uuid == _READ_CHAR_UUID,
       )
       expected_data1 = secrets.token_bytes(8)
       dut_gatt_server.send_response(
@@ -492,7 +477,7 @@ class GattServerVentiTest(navi_test_base.TwoDevicesTestBase):
       self.logger.info("[DUT] Handle second read request.")
       read_request2 = await dut_gatt_server.wait_for_event(
           event=bl4a_api.GattCharacteristicReadRequest,
-          predicate=lambda req: req.characteristic_uuid == char_uuid2,
+          predicate=lambda req: req.characteristic_uuid == read_char_uuid2,
       )
       expected_data2 = secrets.token_bytes(8)
       dut_gatt_server.send_response(

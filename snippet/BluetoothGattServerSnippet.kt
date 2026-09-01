@@ -129,6 +129,39 @@ class BluetoothGattServerSnippet : Snippet {
         putBoolean(SnippetConstants.GATT_FIELD_RESPONSE_NEEDED, responseNeeded)
       }
     }
+
+    override fun onExecuteWrite(device: BluetoothDevice, requestId: Int, execute: Boolean) {
+      Log.i(TAG, "onExecuteWrite device=${device.address}, requestId=$requestId, execute=$execute")
+      postSnippetEvent(callbackId, SnippetConstants.GATT_SERVER_EXECUTE_WRITE) {
+        putString(SnippetConstants.FIELD_DEVICE, device.address)
+        putInt(SnippetConstants.GATT_FIELD_REQUEST_ID, requestId)
+        putBoolean(SnippetConstants.GATT_FIELD_EXECUTE, execute)
+      }
+    }
+
+    override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
+      Log.i(TAG, "onMtuChanged device=${device.address}, mtu=$mtu")
+      postSnippetEvent(callbackId, SnippetConstants.GATT_SERVER_MTU_CHANGED) {
+        putString(SnippetConstants.FIELD_DEVICE, device.address)
+        putInt(SnippetConstants.FIELD_MTU, mtu)
+      }
+    }
+
+    override fun onConnectionUpdated(
+      device: BluetoothDevice,
+      interval: Int,
+      latency: Int,
+      supervisionTimeout: Int,
+      status: Int,
+    ) {
+      postSnippetEvent(callbackId, SnippetConstants.GATT_SERVER_CONNECTION_UPDATED) {
+        putString(SnippetConstants.FIELD_DEVICE, device.address)
+        putInt(SnippetConstants.GATT_FIELD_INTERVAL, interval)
+        putInt(SnippetConstants.GATT_FIELD_LATENCY, latency)
+        putInt(SnippetConstants.GATT_FIELD_SUPERVISION_TIMEOUT, supervisionTimeout)
+        putInt(SnippetConstants.FIELD_STATUS, status)
+      }
+    }
   }
 
   private val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -149,7 +182,9 @@ class BluetoothGattServerSnippet : Snippet {
 
   /** Closes a GATT server with [callbackId]. */
   @Rpc(description = "Closes a GATT server")
-  fun gattServerClose(callbackId: String) = servers.remove(callbackId)?.close()
+  fun gattServerClose(callbackId: String) {
+    servers.remove(callbackId)?.close()
+  }
 
   /**
    * Adds a GATT [service] to the server with [callbackId], and returns true if request is initiated
@@ -159,6 +194,18 @@ class BluetoothGattServerSnippet : Snippet {
   fun gattServerAddService(callbackId: String, service: BluetoothGattService): Boolean =
     servers[callbackId]?.addService(service)
       ?: throw IllegalArgumentException("Invalid callbackId: $callbackId")
+
+  /**
+   * Removes a GATT service with [uuid] from the server with [callbackId], and returns true if
+   * successful.
+   */
+  @Rpc(description = "Remove a GATT service from server")
+  fun gattServerRemoveService(callbackId: String, uuid: String): Boolean {
+    val server =
+      servers[callbackId] ?: throw IllegalArgumentException("Invalid callbackId: $callbackId")
+    val service = server.services.firstOrNull { it.uuid.toString() == uuid }
+    return service?.let { server.removeService(it) } ?: false
+  }
 
   /** Gets all registered services in the server with [callbackId]. */
   @Rpc(description = "Get all GATT services in the server")

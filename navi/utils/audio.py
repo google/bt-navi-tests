@@ -82,7 +82,7 @@ try:
     """
     t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
     return (
-        (np.sin(2 * np.pi * frequency * t) * np.iinfo(data_type).max)
+        (np.sin(2 * np.pi * frequency * t) * np.iinfo(data_type).max)  # pyrefly: ignore[no-matching-overload]
         .astype(data_type)
         .tobytes()
     )

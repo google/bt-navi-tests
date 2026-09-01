@@ -19,8 +19,10 @@ package com.google.wireless.android.pixel.bluetooth.snippet
 import android.content.ComponentName
 import android.os.Bundle
 import android.os.Handler
+import android.util.Log
 import androidx.media3.session.legacy.MediaBrowserCompat
 import androidx.media3.session.legacy.MediaControllerCompat
+import androidx.media3.session.legacy.MediaDescriptionCompat
 import androidx.media3.session.legacy.MediaMetadataCompat
 import androidx.media3.session.legacy.PlaybackStateCompat
 import androidx.test.platform.app.InstrumentationRegistry
@@ -38,7 +40,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 class MediaBrowserSnippet : Snippet {
   private val instrumentation = InstrumentationRegistry.getInstrumentation()
   private val context = instrumentation.targetContext
-  private val browsers = mutableMapOf<String, Pair<MediaBrowserCompat, MediaControllerCompat>>()
+  internal val browsers = mutableMapOf<String, Pair<MediaBrowserCompat, MediaControllerCompat>>()
   private val handler = Handler(context.mainLooper)
 
   private fun getMediaController(cookie: String): MediaControllerCompat =
@@ -57,7 +59,7 @@ class MediaBrowserSnippet : Snippet {
       browser =
         MediaBrowserCompat(
           context,
-          ComponentName(packageName, serviceClassName),
+          ComponentName.createRelative(packageName, serviceClassName),
           object : MediaBrowserCompat.ConnectionCallback() {
             override fun onConnected() {
               deferred.complete(Unit)
@@ -91,6 +93,24 @@ class MediaBrowserSnippet : Snippet {
   @Rpc(description = "Get the root media browser item")
   fun getMediaBrowserRootId(cookie: String): String = getMediaBrowser(cookie).root
 
+  private fun isDownloading(bundle: Bundle?): Boolean {
+    if (bundle == null) return false
+    if (bundle.containsKey(MediaBrowserCompat.EXTRA_DOWNLOAD_PROGRESS)) {
+      val progress = bundle.getFloat(MediaBrowserCompat.EXTRA_DOWNLOAD_PROGRESS)
+      Log.d(TAG, "isDownloading: EXTRA_DOWNLOAD_PROGRESS: $progress")
+      return true
+    }
+    if (bundle.containsKey(MediaDescriptionCompat.EXTRA_DOWNLOAD_STATUS)) {
+      val status = bundle.getLong(MediaDescriptionCompat.EXTRA_DOWNLOAD_STATUS)
+      Log.d(TAG, "isDownloading: EXTRA_DOWNLOAD_STATUS: $status")
+      if (status == MediaDescriptionCompat.STATUS_DOWNLOADING) return true
+    }
+    return false
+  }
+
+  private fun isDownloading(item: MediaBrowserCompat.MediaItem): Boolean =
+    isDownloading(item.description.extras)
+
   /** Get the children of a media browser item. */
   @Rpc(description = "Get the children of a media browser item")
   fun getMediaBrowserChildren(cookie: String, mediaId: String): List<MediaBrowserCompat.MediaItem> {
@@ -104,6 +124,10 @@ class MediaBrowserSnippet : Snippet {
           children: List<MediaBrowserCompat.MediaItem>?,
           options: Bundle?,
         ) {
+          if (isDownloading(options) || children?.any { isDownloading(it) } == true) {
+            Log.d(TAG, "Skipping DOWNLOAD_PENDING children for $parentId")
+            return
+          }
           children?.let { deferred.complete(children) }
             ?: deferred.completeExceptionally(
               IllegalStateException("Got null children for $parentId")

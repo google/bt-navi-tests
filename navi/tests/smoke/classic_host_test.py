@@ -26,9 +26,9 @@ from navi.utils import android_constants
 from navi.utils import bl4a_api
 from navi.utils import pyee_extensions
 
-
 _Profile = android_constants.Profile
 _DEFAULT_DISCOVER_TIMEOUT = 15
+_DEFAULT_ACCEPT_TIMEOUT = 15.0
 _DEFAULT_TIMEOUT = 10.0
 _PROFILE_ID_TO_UUIDS: dict[int, set[core.UUID]] = {
     _Profile.HEADSET: {
@@ -120,7 +120,7 @@ class ClassicHostTest(navi_test_base.TwoDevicesTestBase):
       self.logger.info("[REF] Accept connection.")
       await self.ref.device.accept(
           f"{self.dut.address}/P",
-          timeout=datetime.timedelta(seconds=15).total_seconds(),
+          timeout=_DEFAULT_ACCEPT_TIMEOUT,
       )
 
       self.logger.info("[DUT] Wait for ACL connected.")
@@ -278,7 +278,7 @@ class ClassicHostTest(navi_test_base.TwoDevicesTestBase):
     self.logger.info("[REF] Wait for ACL connection.")
     ref_dut_acl = await self.ref.device.accept(
         f"{self.dut.address}/P",
-        timeout=_DEFAULT_TIMEOUT,
+        timeout=_DEFAULT_ACCEPT_TIMEOUT,
     )
 
     async with self.assert_not_timeout(_DEFAULT_TIMEOUT):
@@ -339,6 +339,41 @@ class ClassicHostTest(navi_test_base.TwoDevicesTestBase):
     async with self.assert_not_timeout(_DEFAULT_TIMEOUT):
       self.logger.info("[REF] Disconnect SDP client.")
       await sdp_client.disconnect()
+
+  async def test_is_discovering_state(self) -> None:
+    """Test isDiscovering API.
+
+    Test steps:
+      1. Verify isDiscovering returns False.
+      2. Start inquiry.
+      3. Verify isDiscovering returns True.
+      4. Stop inquiry.
+      5. Verify isDiscovering returns False.
+    """
+    self.dut.bt.stopInquiry()
+    self.assertFalse(
+        self.dut.bt.isDiscovering(), "DUT should not be discovering initially."
+    )
+
+    with self.dut.bl4a.register_callback(bl4a_api.Module.ADAPTER) as dut_cb:
+      self.dut.bt.startInquiry()
+      try:
+        await dut_cb.wait_for_event(
+            bl4a_api.DiscoveryStarted(),
+            timeout=_DEFAULT_TIMEOUT,
+        )
+        self.assertTrue(
+            self.dut.bt.isDiscovering(), "DUT should be discovering."
+        )
+      finally:
+        self.dut.bt.stopInquiry()
+        await dut_cb.wait_for_event(
+            bl4a_api.DiscoveryFinished(),
+            timeout=_DEFAULT_TIMEOUT,
+        )
+      self.assertFalse(
+          self.dut.bt.isDiscovering(), "DUT should stop discovering."
+      )
 
   async def test_sdp_discovery_from_dut(self) -> None:
     """Test SDP discovery from DUT."""

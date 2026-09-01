@@ -34,9 +34,11 @@ import android.bluetooth.le.PeriodicAdvertisingParameters
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.net.Uri
 import android.os.Build
 import android.os.ParcelUuid
 import android.telecom.Call
+import android.telecom.CallEndpoint
 import android.util.Base64
 import androidx.core.util.forEach
 import androidx.media3.common.AudioAttributes
@@ -199,6 +201,13 @@ class JsonObjectConverter : SnippetObjectConverter {
         SnippetConstants.OOB_DATA_DEVICE_ADDRESS_WITH_TYPE,
         JSONArray(deviceAddressWithType.map { it.toInt() and 0xFF }),
       )
+    }
+
+  private fun CallEndpoint.toJson(): JSONObject =
+    JSONObject().apply {
+      put(SnippetConstants.FIELD_TYPE, this@toJson.endpointType)
+      put(SnippetConstants.FIELD_ID, this@toJson.identifier.toString())
+      put(SnippetConstants.FIELD_NAME, this@toJson.endpointName)
     }
 
   private fun JSONObject.toAdvertiseSettings() =
@@ -460,6 +469,9 @@ class JsonObjectConverter : SnippetObjectConverter {
               getOrNull<String>(SnippetConstants.TITLE)?.let { setTitle(it) }
               getOrNull<String>(SnippetConstants.ARTIST)?.let { setArtist(it) }
               getOrNull<String>(SnippetConstants.ALBUM)?.let { setAlbumTitle(it) }
+              getOrNull<String>(SnippetConstants.FIELD_ARTWORK_URI)?.let {
+                setArtworkUri(Uri.parse(it))
+              }
               getOrNull<Boolean>(SnippetConstants.FIELD_BROWSABLE)?.let { setIsBrowsable(it) }
               getOrNull<Boolean>(SnippetConstants.FIELD_PLAYABLE)?.let { setIsPlayable(it) }
             }
@@ -577,11 +589,19 @@ class JsonObjectConverter : SnippetObjectConverter {
     if (parameter is BluetoothCodecConfig) {
       return parameter.toJson()
     }
+    if (Build.VERSION.SDK_INT >= 35) {
+      if (parameter is BluetoothCodecType) {
+        return parameter.toJson()
+      }
+    }
     if (Build.VERSION.SDK_INT >= 37 && parameter is android.bluetooth.BondStatus) {
       return JSONObject().apply {
         put(SnippetConstants.PAIRING_ALGORITHM, parameter.pairingAlgorithm)
         put(SnippetConstants.PAIRING_VARIANT, parameter.pairingVariant)
       }
+    }
+    if (Build.VERSION.SDK_INT >= 34 && parameter is CallEndpoint) {
+      return parameter.toJson()
     }
     return null
   }
@@ -630,6 +650,9 @@ class JsonObjectConverter : SnippetObjectConverter {
     }
     if (type === BluetoothCodecConfig::class.java) {
       return jsonObject?.toBluetoothCodecConfig()
+    }
+    if (Build.VERSION.SDK_INT >= 35 && type === BluetoothCodecType::class.java) {
+      return jsonObject?.toBluetoothCodecType()
     }
     if (type === BluetoothSocketSettings::class.java) {
       return jsonObject?.toBluetoothSocketSettings()

@@ -17,8 +17,10 @@
 import asyncio
 from collections.abc import Callable, Iterable, Sequence
 import enum
+import functools
 import itertools
 import time
+from typing import Literal
 
 from bumble import a2dp
 from bumble import avdtp
@@ -26,6 +28,7 @@ from bumble import avrcp
 from bumble import core
 from bumble import device as bumble_device
 from bumble import hci
+from bumble import l2cap
 from bumble import utils
 from mobly import test_runner
 from mobly import signals
@@ -42,8 +45,6 @@ _DEFAULT_STEP_TIMEOUT_SECONDS = 15.0
 _SHORT_STEP_TIMEOUT_SECONDS = 5.0
 _DEFAULT_STREAM_DURATION_SECONDS = 2.0
 _CODEC_CONFIG_MAX_PRIORITY = 1000000
-_PROPERTY_CODEC_PRIORITY = "bluetooth.a2dp.source.%s_priority.config"
-_VALUE_CODEC_DISABLED = -1
 
 
 _A2dpCodec = a2dp_ext.A2dpCodec
@@ -59,6 +60,7 @@ class OptionalCodecsPref(enum.IntEnum):
 
 class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
   """A2DP Source (DUT) tests."""
+  dut_supported_codecs: set[int]
 
   @override
   async def async_setup_class(self) -> None:
@@ -69,22 +71,22 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
     ):
       raise signals.TestAbortClass("A2DP Source is not enabled on DUT.")
 
+  @override
+  async def async_setup_test(self) -> None:
+    await super().async_setup_test()
+    # Make sure A2DP profile is connected, or get_a2dp_supported_codec_types
+    # will return empty list.
+    self.dut.bt.waitForProfileReady(android_constants.Profile.A2DP)
     self.dut_supported_codecs = {
-        codec
-        for codec in _A2dpCodec
-        if int(
-            self.dut.getprop(_PROPERTY_CODEC_PRIORITY % codec.name.lower())
-            or "0"
-        )
-        > _VALUE_CODEC_DISABLED
-        and (
-            codec != _A2dpCodec.OPUS
-            or self.dut.getprop(
-                android_constants.Property.A2DP_SOURCE_OPUS_ENABLED
-            )
-            == "true"
-        )
+        codec.id
+        for codec in self.dut.bl4a.get_a2dp_supported_codec_types()
+        if codec.id is not None
     }
+
+  @override
+  async def async_teardown_test(self) -> None:
+    self.dut.bt.audioStop()
+    await super().async_teardown_test()
 
   def _setup_a2dp_sink_from_ref(
       self,
@@ -111,13 +113,19 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
     )
 
   async def _pair_and_connect_from_dut(
-      self, codecs: list[_A2dpCodec] | None = None
+      self,
+      codecs: list[_A2dpCodec] | None = None,
+      *,
+      protocol_factory: Callable[..., avdtp.Protocol] | None = None,
+      wait_for_active: bool = True,
   ) -> avdtp.Protocol:
     """Tests A2DP connection establishment right after a pairing session."""
     if codecs is None:
       codecs = [_A2dpCodec.SBC]
     with self.dut.bl4a.register_callback(_Module.A2DP) as dut_cb:
-      listener = self._setup_a2dp_sink_from_ref(codecs)
+      listener = self._setup_a2dp_sink_from_ref(
+          codecs, protocol_factory=protocol_factory
+      )
       protocol_future: asyncio.Future[avdtp.Protocol] = (
           asyncio.get_running_loop().create_future()
       )
@@ -134,11 +142,12 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
           ),
           timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
       )
-      self.logger.info("[DUT] Wait for A2DP becomes active.")
-      await dut_cb.wait_for_event(
-          bl4a_api.ProfileActiveDeviceChanged(address=self.ref.address),
-          timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
-      )
+      if wait_for_active:
+        self.logger.info("[DUT] Wait for A2DP becomes active.")
+        await dut_cb.wait_for_event(
+            bl4a_api.ProfileActiveDeviceChanged(address=self.ref.address),
+            timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+        )
 
       return await asyncio.wait_for(
           protocol_future, timeout=_DEFAULT_STEP_TIMEOUT_SECONDS
@@ -190,8 +199,7 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
       # Setup pairing and initial A2DP connection
       avdtp_listener = self._setup_a2dp_sink_from_ref([_A2dpCodec.SBC])
       self.logger.info("[DUT] Connect and pair REF.")
-      async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
-        await self.classic_connect_and_pair(connect_profiles=True)
+      await self.classic_connect_and_pair(connect_profiles=True)
 
       self.logger.info("[DUT] Wait for A2DP connected.")
       await dut_cb.wait_for_event(
@@ -439,7 +447,7 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
           )
 
     class CollidingProtocol(avdtp_ext.Protocol):
-      stream_factory = CollidingStream
+      stream_factory = CollidingStream  # pyrefly: ignore[bad-assignment]
 
     # Step 1: Setup pairing and initial A2DP connection.
     await self._pair_and_connect_from_dut([_A2dpCodec.SBC])
@@ -589,7 +597,7 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
           )
 
     class CollidingProtocol(avdtp_ext.Protocol):
-      stream_factory = CollidingStream
+      stream_factory = CollidingStream  # pyrefly: ignore[bad-assignment]
 
     # Step 1: Setup pairing and initial A2DP connection.
     await self._pair_and_connect_from_dut([_A2dpCodec.SBC])
@@ -673,7 +681,7 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
       DUT should be able to start audio playback successfully regardless of the
       optional codec preference configured.
     """
-    if _A2dpCodec.AAC not in self.dut_supported_codecs:
+    if android_constants.BluetoothCodecId.AAC not in self.dut_supported_codecs:
       self.skipTest("DUT does not support AAC codec.")
 
     with self.dut.bl4a.register_callback(_Module.A2DP) as dut_cb:
@@ -689,8 +697,7 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
       listener.once(listener.EVENT_CONNECTION, protocol_future.set_result)
 
       self.logger.info("[DUT] Connect and pair REF.")
-      async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
-        await self.classic_connect_and_pair(connect_profiles=True)
+      await self.classic_connect_and_pair(connect_profiles=True)
 
       # Configure optional codecs mode on DUT
       self.logger.info("[DUT] Configuring optional codecs: %r", pref)
@@ -773,7 +780,7 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
          setA2dpCodecConfig with valid/invalid parameters.
       6. Verify playback is still active.
     """
-    if _A2dpCodec.AAC not in self.dut_supported_codecs:
+    if android_constants.BluetoothCodecId.AAC not in self.dut_supported_codecs:
       self.skipTest("DUT does not support AAC codec.")
 
     with self.dut.bl4a.register_callback(_Module.A2DP) as dut_cb:
@@ -790,8 +797,7 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
 
       # Connect and pair DUT with REF
       self.logger.info("[DUT] Connect and pair REF.")
-      async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
-        await self.classic_connect_and_pair(connect_profiles=True)
+      await self.classic_connect_and_pair(connect_profiles=True)
 
       # Wait for A2DP connection to be established
       self.logger.info("[DUT] Wait for A2DP connected.")
@@ -872,8 +878,7 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
       listener.once(listener.EVENT_CONNECTION, protocol_future.set_result)
 
       self.logger.info("[DUT] Connect and pair REF.")
-      async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
-        await self.classic_connect_and_pair(connect_profiles=True)
+      await self.classic_connect_and_pair(connect_profiles=True)
 
       # Wait for connection
       self.logger.info("[DUT] Wait for A2DP connected.")
@@ -895,7 +900,8 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
       if avdtp_protocol.streams:
         self.logger.info("[REF] Closing existing stream to make endpoint IDLE.")
         stream = next(iter(avdtp_protocol.streams.values()))
-        await stream.close()
+        async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+          await stream.close()
 
       # Build an invalid configuration (e.g., invalid sampling frequency)
       invalid_sbc_info = (  # 0x00 for sampling freq/channel mode
@@ -949,90 +955,100 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
           cm.exception,
       )
 
-  async def test_avdt_handle_suspend_cfm_bad_state_error(self) -> None:
-    """Test AVDTP handling of suspend confirmation BAD_STATE error.
+  @navi_test_base.named_parameterized(
+      start_cfm=dict(action="start", wait_for_playing=False),
+      suspend_cfm=dict(action="suspend", wait_for_playing=True),
+  )
+  async def test_avdt_handle_cfm_bad_state_error(
+      self, action: Literal["start", "suspend"], wait_for_playing: bool
+  ) -> None:
+    """Tests AVDTP handling of confirmation BAD_STATE error.
+
+    Args:
+      action: The AVDTP action to test ("start" or "suspend").
+      wait_for_playing: Whether to wait for A2DP playing state before injecting
+        the error.
 
     Test steps:
-      1. Setup A2DP Sink on REF and intercept the AVDTP Protocol instance.
-      2. Connect and pair DUT with REF.
-      3. Start streaming from DUT to REF.
-      4. Manually set endpoint's stream to None on REF to force BAD_STATE
-      response
-         on Suspend command.
-      5. Suspend streaming from DUT.
-      6. Verify that DUT receives BAD_STATE reject and falls back to
-         disconnecting the A2DP profile.
+      1. Setup A2DP Sink on REF with custom protocol rejecting Start/Suspend.
+      2. Connect and pair DUT with REF, wait for AVDTP connection to open.
+      3. Trigger music streaming from DUT.
+      4. For suspend test, wait for playback to start, then stop music.
+      5. Verify DUT gracefully closes A2DP connection upon BAD_STATE reject.
     """
+    test_logger = self.logger
+
+    class _RejectStartSink(avdtp.LocalSink):
+
+      async def on_start_command(self) -> avdtp.Message | None:
+        """Simulates AVDTP_BAD_STATE reject for Start_Command."""
+        test_logger.info(
+            "[REF] Simulating AVDTP_BAD_STATE reject for Start_Command."
+        )
+        return avdtp.Start_Reject(self.seid, avdtp.AVDTP_BAD_STATE_ERROR)
+
+    class _RejectSuspendSink(avdtp.LocalSink):
+
+      async def on_suspend_command(self) -> avdtp.Message | None:
+        """Simulates AVDTP_BAD_STATE reject for Suspend_Command."""
+        test_logger.info(
+            "[REF] Simulating AVDTP_BAD_STATE reject for Suspend_Command."
+        )
+        return avdtp.Suspend_Reject(self.seid, avdtp.AVDTP_BAD_STATE_ERROR)
+
+    sink_class = _RejectStartSink if action == "start" else _RejectSuspendSink
+
+    # Steps 1 & 2: Setup A2DP Sink on REF and Connect DUT with REF.
+    self.logger.info("[Steps 1 & 2] Setup A2DP and Connect DUT with REF.")
     with self.dut.bl4a.register_callback(_Module.A2DP) as dut_cb:
-      # Setup A2DP Sink and listener
-      listener = self._setup_a2dp_sink_from_ref([_A2dpCodec.SBC])
-      protocol_future: asyncio.Future[avdtp.Protocol] = (
-          asyncio.get_running_loop().create_future()
-      )
-      listener.once(listener.EVENT_CONNECTION, protocol_future.set_result)
-
-      # Connect and pair
-      self.logger.info("[DUT] Connect and pair REF.")
-      async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
-        await self.classic_connect_and_pair(connect_profiles=True)
-
-      self.logger.info("[DUT] Wait for A2DP connected.")
-      await dut_cb.wait_for_event(
-          bl4a_api.ProfileConnectionStateChanged(
-              address=self.ref.address,
-              state=android_constants.ConnectionState.CONNECTED,
+      _ = await self._pair_and_connect_from_dut(
+          [_A2dpCodec.SBC],
+          protocol_factory=functools.partial(
+              avdtp_ext.Protocol, sink_factory=sink_class
           ),
-          timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+          wait_for_active=wait_for_playing,
       )
 
-      self.logger.info("[REF] Waiting for AVDTP protocol to be established.")
-      avdtp_protocol = await asyncio.wait_for(
-          protocol_future, timeout=_DEFAULT_STEP_TIMEOUT_SECONDS
-      )
-
-      # Start streaming
-      self.logger.info("[DUT] Triggering music playback via audioPlaySine")
+      # Step 3: Trigger streaming from DUT.
+      self.logger.info("[Step 3] Trigger music streaming from DUT.")
       self.dut.bt.audioPlaySine()
 
-      self.logger.info("[DUT] Waiting for playback to start...")
-      await dut_cb.wait_for_event(
-          bl4a_api.A2dpPlayingStateChanged(
-              address=self.ref.address,
-              state=android_constants.A2dpState.PLAYING,
-          ),
-          timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
-          timeout_msg="DUT reports A2DP is not playing",
-      )
+      # Step 4: For suspend test, wait for playback to start, then stop music.
+      if wait_for_playing:
+        self.logger.info("[DUT] Waiting for playback to start...")
+        if not self.dut.bt.isA2dpPlaying(self.ref.address):
+          await dut_cb.wait_for_event(
+              bl4a_api.A2dpPlayingStateChanged(
+                  address=self.ref.address,
+                  state=android_constants.A2dpState.PLAYING,
+              ),
+              timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+              timeout_msg="DUT reports A2DP is not playing",
+          )
 
-      await asyncio.sleep(_DEFAULT_STREAM_DURATION_SECONDS)
+        await asyncio.sleep(_DEFAULT_STREAM_DURATION_SECONDS)
 
-      self.assertTrue(
-          self.dut.bt.isA2dpPlaying(self.ref.address),
-          "[DUT] reports A2DP is not keeping playing",
-      )
+        self.assertTrue(
+            self.dut.bt.isA2dpPlaying(self.ref.address),
+            "[DUT] reports A2DP is not keeping playing",
+        )
 
-      # Force REF endpoint into a bad state by removing stream
-      # reference, so it will reject SUSPEND/CLOSE commands with BAD_STATE.
-      self.logger.info(
-          "[REF] Removing stream reference from endpoint to force BAD_STATE."
-      )
-      stream = next(iter(avdtp_protocol.streams.values()))
-      stream.local_endpoint.stream = None
+        self.logger.info("[DUT] Stopping music playback via audioStop")
+        self.dut.bt.audioStop()
 
-      # Suspend streaming from DUT
-      self.logger.info("[DUT] Stopping music playback via audioStop")
-      self.dut.bt.audioStop()
-
-      # Verify DUT disconnects A2DP as fallback
-      self.logger.info("[DUT] Wait for A2DP disconnected.")
+      # Step 5: Verify that DUT gracefully closes the A2DP connection.
+      self.logger.info("[Step 5] Verify DUT closes A2DP connection.")
       await dut_cb.wait_for_event(
           bl4a_api.ProfileConnectionStateChanged(
               address=self.ref.address,
               state=android_constants.ConnectionState.DISCONNECTED,
           ),
           timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
-          timeout_msg="[DUT] A2DP did not disconnect in time.",
+          timeout_msg=(
+              "[DUT] A2DP did not disconnect in time after BAD_STATE reject."
+          ),
       )
+      self.logger.info("[DUT] A2DP connection disconnected successfully.")
 
   async def test_avdt_open_after_timeout(self) -> None:
     """Tests AVDTP stream establishment fallback when peer device stalls.
@@ -1060,8 +1076,7 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
 
       # Establish an ACL connection and pair without connecting profiles.
       self.logger.info("[REF] Connect and pair DUT without profiles.")
-      async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
-        await self.classic_connect_and_pair(connect_profiles=False)
+      await self.classic_connect_and_pair(connect_profiles=False)
 
       dut_ref_acl = await self._find_or_connect_acl_from_ref(self.dut.address)
 
@@ -1193,8 +1208,7 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
       )
 
       self.logger.info("[DUT] Connect and pair REF.")
-      async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
-        await self.classic_connect_and_pair(connect_profiles=True)
+      await self.classic_connect_and_pair(connect_profiles=True)
 
       # Wait for the AVDTP connection to be established
       avdtp_protocol = await asyncio.wait_for(
@@ -1275,6 +1289,181 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
           timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
       )
 
+  async def test_avdt_handles_stream_discover_response_in_open_state(
+      self,
+  ) -> None:
+    """Tests AVDTP handling stream discovery response in open state.
+
+    Test steps:
+      1. REF initiates ACL and AVDTP signaling connection to DUT.
+      2. REF discovers DUT capabilities and configures an AAC stream.
+      3. DUT accepts configuration and initiates Discover_Command.
+      4. REF intercepts Discover_Command and initiates Open_Command before
+      responding.
+      5. REF responds to Discover_Command after the media channel is opened.
+      6. Verify DUT successfully obtains capabilities from REF in open state.
+    """
+    test_logger = self.logger
+    discover_command_fut: asyncio.Future[avdtp.Discover_Command] = (
+        asyncio.get_running_loop().create_future()
+    )
+    media_opened_fut: asyncio.Future[None] = (
+        asyncio.get_running_loop().create_future()
+    )
+    get_cap_fut: asyncio.Future[None] = (
+        asyncio.get_running_loop().create_future()
+    )
+
+    class DelayedDiscoverProtocol(avdtp_ext.Protocol):
+
+      async def on_discover_command(
+          self, command: avdtp.Discover_Command
+      ) -> avdtp.Message | None:
+        """Intercepts Discover_Command to delay response until media opens."""
+        test_logger.info("[REF] Intercepted Discover_Command from DUT.")
+        if not discover_command_fut.done():
+          discover_command_fut.set_result(command)
+
+        test_logger.info(
+            "[REF] Waiting for media channel to open before responding..."
+        )
+        await media_opened_fut
+        test_logger.info("[REF] Media channel open. Responding to Discover.")
+        return await super().on_discover_command(command)
+
+      async def on_get_capabilities_command(
+          self, command: avdtp.Get_Capabilities_Command
+      ) -> avdtp.Message | None:
+        """Intercepts GetCapabilities to verify DUT capability discovery."""
+        test_logger.info(
+            "[REF] Intercepted GetCapabilities for SEID %d", command.acp_seid
+        )
+        result = await super().on_get_capabilities_command(command)
+        if not get_cap_fut.done():
+          get_cap_fut.set_result(None)
+        return result
+
+      async def on_get_all_capabilities_command(
+          self, command: avdtp.Get_All_Capabilities_Command
+      ) -> avdtp.Message | None:
+        """Intercepts GetAllCapabilities to verify DUT capability discovery."""
+        test_logger.info(
+            "[REF] Intercepted GetAllCapabilities for SEID %d", command.acp_seid
+        )
+        result = await super().on_get_all_capabilities_command(command)
+        if not get_cap_fut.done():
+          get_cap_fut.set_result(None)
+        return result
+
+    dut_cb = self.test_case_context.enter_context(
+        self.dut.bl4a.register_callback(_Module.A2DP)
+    )
+    # Setup listener with custom protocol supporting SBC and AAC.
+    listener = self._setup_a2dp_sink_from_ref(
+        [_A2dpCodec.SBC, _A2dpCodec.AAC],
+        protocol_factory=DelayedDiscoverProtocol,
+    )
+
+    # Step 1: REF initiates ACL connection without profiles.
+    self.logger.info("[Step 1] Initiate ACL connection without profiles.")
+    dut_ref_acl = await self.classic_connect_and_pair(connect_profiles=False)
+    async with self.assert_not_timeout(
+        _DEFAULT_STEP_TIMEOUT_SECONDS,
+        msg="[DUT] Connect and pair REF without profiles.",
+        with_log=False,
+    ):
+      self.logger.info("[REF] Connect AVDTP signaling channel.")
+      avdtp_protocol = await DelayedDiscoverProtocol.connect(dut_ref_acl)
+      avdtp_protocol.add_sink(_A2dpCodec.SBC.get_default_capabilities())
+      avdtp_protocol.add_sink(_A2dpCodec.AAC.get_default_capabilities())
+      listener.set_server(dut_ref_acl, avdtp_protocol)
+
+      # Step 2: REF discovers DUT capabilities and configures an AAC stream.
+      self.logger.info("[Step 2] Discover DUT endpoints.")
+      endpoints = await avdtp_protocol.discover_remote_endpoints()
+
+      # pylint: disable=g-complex-comprehension
+      aac_endpoint, aac_caps = next(
+          (
+              (ep, cap)
+              for ep in endpoints
+              for cap in ep.capabilities
+              if isinstance(cap, avdtp.MediaCodecCapabilities)
+              and cap.media_codec_type == a2dp.A2DP_MPEG_2_4_AAC_CODEC_TYPE
+          ),
+          (None, None),
+      )
+      # pylint: enable=g-complex-comprehension
+
+      self.assertIsNotNone(aac_endpoint, "DUT AAC endpoint not found.")
+      assert aac_endpoint is not None and aac_caps is not None
+
+      config_caps = [
+          avdtp.ServiceCapabilities(
+              service_category=avdtp.AVDTP_MEDIA_TRANSPORT_SERVICE_CATEGORY,
+              service_capabilities_bytes=b"",
+          ),
+          aac_caps,
+      ]
+
+      self.logger.info("[REF] Initiate SetConfiguration to DUT.")
+      async with self.assert_not_timeout(
+          _DEFAULT_STEP_TIMEOUT_SECONDS,
+          msg="[REF] Timeout waiting for DUT to accept SetConfiguration",
+          with_log=False,
+      ):
+        await avdtp_protocol.set_configuration(
+            acp_seid=aac_endpoint.seid, int_seid=2, capabilities=config_caps
+        )
+
+      # Step 3: DUT accepted SetConfiguration. Discover_Command was intercepted.
+      async with self.assert_not_timeout(
+          _DEFAULT_STEP_TIMEOUT_SECONDS,
+          msg="[REF] Timeout waiting for DUT to send Discover_Command",
+          with_log=False,
+      ):
+        await discover_command_fut
+      self.logger.info("[REF] DUT Discover_Command intercepted successfully.")
+
+      # Step 4: REF intercepts Discover_Command and initiates Open_Command.
+      self.logger.info("[Step 4] Initiate Open_Command to DUT.")
+      async with self.assert_not_timeout(
+          _DEFAULT_STEP_TIMEOUT_SECONDS,
+          msg="[REF] Timeout waiting for DUT to open AVDTP signaling channel",
+          with_log=False,
+      ):
+        await avdtp_protocol.open(aac_endpoint.seid)
+
+      self.logger.info("[REF] Initiate media transport L2CAP channel.")
+      await dut_ref_acl.create_l2cap_channel(
+          l2cap.ClassicChannelSpec(psm=avdtp.AVDTP_PSM)
+      )
+
+      self.logger.info("[DUT] Wait for A2DP connected.")
+      await dut_cb.wait_for_event(
+          bl4a_api.ProfileConnectionStateChanged(
+              address=self.ref.address,
+              state=android_constants.ConnectionState.CONNECTED,
+          ),
+          timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+      )
+
+      # Step 5: REF responds to Discover_Command after media channel is opened.
+      self.logger.info("[Step 5] Media open. Unblocking Discover_Response.")
+      media_opened_fut.set_result(None)
+
+    # Step 6: Verify DUT successfully obtains capabilities from REF in open
+    # state.
+    async with self.assert_not_timeout(
+        _DEFAULT_STEP_TIMEOUT_SECONDS,
+        msg="[DUT] Waiting for DUT to send GetCapabilities...",
+        with_log=False,
+    ):
+      await get_cap_fut
+    self.logger.info(
+        "[DUT] DUT successfully obtained capabilities in open state."
+    )
+
   async def test_dut_disconnects_after_no_avdt_start_response(self) -> None:
     """Tests that DUT disconnects L2CAP Channel after no response to AVDT Start.
 
@@ -1307,73 +1496,74 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
         await asyncio.Event().wait()
         return None
 
-    with self.dut.bl4a.register_callback(_Module.A2DP) as dut_cb:
-      # Setup Listener and SDP for REF
-      avdtp_listener = self._setup_a2dp_sink_from_ref(
-          [_A2dpCodec.SBC], protocol_factory=HangingAvdtpProtocol
-      )
+    dut_cb = self.test_case_context.enter_context(
+        self.dut.bl4a.register_callback(_Module.A2DP)
+    )
+    # Setup Listener and SDP for REF
+    avdtp_listener = self._setup_a2dp_sink_from_ref(
+        [_A2dpCodec.SBC], protocol_factory=HangingAvdtpProtocol
+    )
 
-      # Use a queue to capture the incoming AVDTP protocol connection
-      avdtp_protocols = asyncio.Queue[avdtp.Protocol]()
-      avdtp_listener.on(
-          avdtp_listener.EVENT_CONNECTION, avdtp_protocols.put_nowait
-      )
+    # Use a queue to capture the incoming AVDTP protocol connection
+    avdtp_protocols = asyncio.Queue[avdtp.Protocol]()
+    avdtp_listener.on(
+        avdtp_listener.EVENT_CONNECTION, avdtp_protocols.put_nowait
+    )
 
-      self.logger.info("[DUT] Connect and pair REF.")
-      async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
-        await self.classic_connect_and_pair(connect_profiles=True)
+    self.logger.info("[DUT] Connect and pair REF.")
+    async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+      await self.classic_connect_and_pair(connect_profiles=True)
 
-      self.logger.info("[DUT] Wait for A2DP connected.")
-      await dut_cb.wait_for_event(
-          bl4a_api.ProfileConnectionStateChanged(
-              address=self.ref.address,
-              state=android_constants.ConnectionState.CONNECTED,
-          ),
-          timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
-      )
+    self.logger.info("[DUT] Wait for A2DP connected.")
+    await dut_cb.wait_for_event(
+        bl4a_api.ProfileConnectionStateChanged(
+            address=self.ref.address,
+            state=android_constants.ConnectionState.CONNECTED,
+        ),
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
 
-      # Wait for the AVDTP connection to be established
-      avdtp_protocol = await asyncio.wait_for(
-          avdtp_protocols.get(), timeout=_DEFAULT_STEP_TIMEOUT_SECONDS
-      )
+    # Wait for the AVDTP connection to be established
+    avdtp_protocol = await asyncio.wait_for(
+        avdtp_protocols.get(), timeout=_DEFAULT_STEP_TIMEOUT_SECONDS
+    )
 
-      l2cap_closed_future: asyncio.Future[None] = (
-          asyncio.get_running_loop().create_future()
-      )
+    l2cap_closed_future: asyncio.Future[None] = (
+        asyncio.get_running_loop().create_future()
+    )
 
-      # Listen for AVDTP protocol close (L2CAP disconnection)
-      def on_close() -> None:
-        if not l2cap_closed_future.done():
-          l2cap_closed_future.set_result(None)
+    # Listen for AVDTP protocol close (L2CAP disconnection)
+    def on_close() -> None:
+      if not l2cap_closed_future.done():
+        l2cap_closed_future.set_result(None)
 
-      avdtp_protocol.once(avdtp_protocol.EVENT_CLOSE, on_close)
+    avdtp_protocol.once(avdtp_protocol.EVENT_CLOSE, on_close)
 
-      # Start streaming to trigger Start_Command
-      self.logger.info("[DUT] Triggering music playback via audioPlaySine")
-      self.dut.bt.audioPlaySine()
+    # Start streaming to trigger Start_Command
+    self.logger.info("[DUT] Triggering music playback via audioPlaySine")
+    self.dut.bt.audioPlaySine()
 
-      self.logger.info("[REF] Waiting for Start_Command...")
-      await asyncio.wait_for(
-          start_cmd_future, timeout=_DEFAULT_STEP_TIMEOUT_SECONDS
-      )
+    self.logger.info("[REF] Waiting for Start_Command...")
+    await asyncio.wait_for(
+        start_cmd_future, timeout=_DEFAULT_STEP_TIMEOUT_SECONDS
+    )
 
-      self.logger.info(
-          "[REF] Waiting for AVDTP L2CAP channel disconnection (expect"
-          " ~15s)..."
-      )
-      # Wait for the DUT to hit its internal timeout and disconnect
-      # the L2CAP Channel.
-      await asyncio.wait_for(l2cap_closed_future, timeout=20.0)
+    self.logger.info(
+        "[REF] Waiting for AVDTP L2CAP channel disconnection (expect ~15s)..."
+    )
+    # Wait for the DUT to hit its internal timeout and disconnect
+    # the L2CAP Channel.
+    await asyncio.wait_for(l2cap_closed_future, timeout=20.0)
 
-      # Verify A2DP is disconnected on DUT
-      self.logger.info("[DUT] Wait for A2DP disconnected.")
-      await dut_cb.wait_for_event(
-          bl4a_api.ProfileConnectionStateChanged(
-              address=self.ref.address,
-              state=android_constants.ConnectionState.DISCONNECTED,
-          ),
-          timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
-      )
+    # Verify A2DP is disconnected on DUT
+    self.logger.info("[DUT] Wait for A2DP disconnected.")
+    await dut_cb.wait_for_event(
+        bl4a_api.ProfileConnectionStateChanged(
+            address=self.ref.address,
+            state=android_constants.ConnectionState.DISCONNECTED,
+        ),
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
 
   @navi_test_base.parameterized(
       *itertools.product(
@@ -1408,7 +1598,7 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
       4. Start stream.
       5. Stop stream.
     """
-    if _A2dpCodec.LDAC not in self.dut_supported_codecs:
+    if android_constants.BluetoothCodecId.LDAC not in self.dut_supported_codecs:
       self.skipTest("DUT does not support LDAC.")
 
     self.dut.bt.audioSetRepeat(android_constants.RepeatMode.ONE)
@@ -1568,6 +1758,186 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
       ):
         await self.ref.device.accept(f"{self.dut.address}/P")
       self.logger.info("[DUT] No new connection retry from DUT as expected.")
+
+  @navi_test_base.named_parameterized(
+      capability_toggling_from_enabled=dict(
+          initial_delay_report=True,
+          second_delay_report=False,
+          third_delay_report=True,
+          reconfigure_codec=False,
+      ),
+      capability_toggling_from_disabled=dict(
+          initial_delay_report=False,
+          second_delay_report=True,
+          third_delay_report=False,
+          reconfigure_codec=False,
+      ),
+      retention_after_codec_reconfiguration=dict(
+          initial_delay_report=False,
+          second_delay_report=False,
+          third_delay_report=True,
+          reconfigure_codec=True,
+      ),
+  )
+  async def test_delay_report(
+      self,
+      initial_delay_report: bool,
+      second_delay_report: bool,
+      third_delay_report: bool,
+      reconfigure_codec: bool,
+  ) -> None:
+    """Tests AVDTP delay report capability negotiation and codec reconfiguration.
+
+    Args:
+      initial_delay_report: Delay report support for initial connection.
+      second_delay_report: Delay report support for second connection.
+      third_delay_report: Delay report support for third connection.
+      reconfigure_codec: Whether to execute dynamic codec reconfiguration.
+
+    Test steps:
+      1. Connect, pair, open AVDTP, and disconnect with remote REF using initial
+         delay report capability.
+      2. If reconfiguring codec, execute dynamic switch from AAC to SBC and
+         disconnect. Otherwise, perform second connection cycle with second
+         delay report capability and disconnect.
+      3. Perform final connection cycle with third delay report capability and
+         disconnect cleanly.
+    """
+    delay_report_enabled = True
+
+    class DelayReportProtocol(avdtp_ext.Protocol):
+      """Custom AVDTP protocol for dynamic Delay Reporting toggling."""
+
+      def add_sink(
+          self, codec_capabilities: avdtp.MediaCodecCapabilities
+      ) -> avdtp.LocalSink:
+        """Adds a local sink endpoint with dynamic delay reporting capability.
+
+        Args:
+          codec_capabilities: The media codec capabilities.
+
+        Returns:
+          The created local sink endpoint.
+        """
+        sink = super().add_sink(codec_capabilities)
+        if delay_report_enabled:
+          sink.capabilities = list(sink.capabilities) + [
+              avdtp.ServiceCapabilities(
+                  service_category=avdtp.AVDTP_DELAY_REPORTING_SERVICE_CATEGORY,
+                  service_capabilities_bytes=b"",
+              )
+          ]
+        return sink
+
+    dut_a2dp_cb = self.test_case_context.enter_context(
+        self.dut.bl4a.register_callback(_Module.A2DP)
+    )
+
+    async def _setup_and_connect_a2dp(enable_delay_report: bool) -> None:
+      """Sets up A2DP sink on REF and connects A2DP from DUT.
+
+      Args:
+        enable_delay_report: Whether to enable Delay Reporting capability.
+      """
+      nonlocal delay_report_enabled
+      delay_report_enabled = enable_delay_report
+      self.ref.device.l2cap_channel_manager.servers.pop(avdtp.AVDTP_PSM, None)
+      self._setup_a2dp_sink_from_ref(
+          [_A2dpCodec.SBC, _A2dpCodec.AAC],
+          protocol_factory=DelayReportProtocol,
+      )
+      self.logger.info("[DUT] Connect A2DP.")
+      self.dut.bt.connect(self.ref.address)
+
+      self.logger.info("[DUT] Wait for A2DP connected.")
+      await dut_a2dp_cb.wait_for_event(
+          bl4a_api.ProfileConnectionStateChanged(
+              address=self.ref.address,
+              state=android_constants.ConnectionState.CONNECTED,
+          ),
+          timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+      )
+
+    async def _disconnect_a2dp() -> None:
+      """Disconnects A2DP connection cleanly."""
+      self.logger.info("[DUT] Disconnect A2DP.")
+      await self.disconnect_with_check(
+          self.ref.address, android_constants.Transport.CLASSIC
+      )
+
+    # Step 1: Initial connection cycle.
+    self.logger.info(
+        "[Step 1] Connect with delay report enabled: %s",
+        initial_delay_report,
+    )
+    delay_report_enabled = initial_delay_report
+    self.ref.device.l2cap_channel_manager.servers.pop(avdtp.AVDTP_PSM, None)
+    self._setup_a2dp_sink_from_ref(
+        [_A2dpCodec.SBC, _A2dpCodec.AAC], protocol_factory=DelayReportProtocol
+    )
+    self.logger.info("[DUT] Connect and pair REF.")
+    async with self.assert_not_timeout(
+        _DEFAULT_STEP_TIMEOUT_SECONDS, msg="[DUT] Connect and pair REF."
+    ):
+      await self.classic_connect_and_pair(connect_profiles=True)
+
+    self.logger.info("[DUT] Wait for A2DP connected.")
+    await dut_a2dp_cb.wait_for_event(
+        bl4a_api.ProfileConnectionStateChanged(
+            address=self.ref.address,
+            state=android_constants.ConnectionState.CONNECTED,
+        ),
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
+    await _disconnect_a2dp()
+
+    # Step 2: Second connection cycle or dynamic codec reconfiguration.
+    if reconfigure_codec:
+      self.logger.info("[Step 2] Connect without delay report supported.")
+      await _setup_and_connect_a2dp(False)
+
+      self.logger.info(
+          "[Step 2] Reconfigure codec AAC to SBC (delay report not supported)."
+      )
+      codec_config = bl4a_api.A2dpCodecConfiguration(
+          codec_type=android_constants.A2dpCodecType.SBC,
+          priority=_CODEC_CONFIG_MAX_PRIORITY,
+      )
+      self.logger.info("[DUT] Setting A2DP codec config to SBC.")
+      self.dut.bl4a.set_a2dp_codec_config(self.ref.address, codec_config)
+
+      self.logger.info("[DUT] Wait for codec config change to SBC.")
+
+      def match_sbc_event(e: bl4a_api.A2dpCodecConfigChanged) -> bool:
+        if e.codec_config is None:
+          return False
+        return e.codec_config.codec_type == android_constants.A2dpCodecType.SBC
+
+      codec_event = await dut_a2dp_cb.wait_for_event(
+          bl4a_api.A2dpCodecConfigChanged,
+          predicate=match_sbc_event,
+          timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+      )
+      self.assertEqual(
+          codec_event.codec_config.codec_type,
+          android_constants.A2dpCodecType.SBC,
+      )
+      await _disconnect_a2dp()
+    else:
+      self.logger.info(
+          "[Step 2] Connect with delay report enabled: %s",
+          second_delay_report,
+      )
+      await _setup_and_connect_a2dp(second_delay_report)
+      await _disconnect_a2dp()
+
+    # Step 3: Final connection cycle to verify pristine state machine health.
+    self.logger.info(
+        "[Step 3] Final connect with delay report enabled: %s",
+        third_delay_report,
+    )
+    await _setup_and_connect_a2dp(third_delay_report)
+    await _disconnect_a2dp()
 
 
 if __name__ == "__main__":

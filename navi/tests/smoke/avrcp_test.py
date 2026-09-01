@@ -21,10 +21,14 @@ import sys
 import tempfile
 from typing import TypeAlias
 import wave
+import xml.etree.ElementTree as ET
 
 from bumble import avc
 from bumble import avdtp
 from bumble import avrcp
+from bumble import core
+from bumble import hci
+from bumble import l2cap
 from mobly import test_runner
 from mobly import signals
 from typing_extensions import override
@@ -36,15 +40,18 @@ from navi.tests import navi_test_base
 from navi.utils import android_constants
 from navi.utils import bl4a_api
 from navi.utils import constants
-from navi.utils import matcher
 
 _A2DP_SERVICE_RECORD_HANDLE = 1
 _AVRCP_CONTROLLER_RECORD_HANDLE = 2
 _AVRCP_TARGET_RECORD_HANDLE = 3
-_DEFAULT_STEP_TIMEOUT_SECONDS = 5.0
-_PREPARE_TIME_SECONDS = 0.5
+_DEFAULT_STEP_TIMEOUT_SECONDS = 10.0
 _PROPERTY_AVRCP_BROWSABLE_MEDIA_PLAYER_ENABLED = (
     "bluetooth.avrcp.browsable_media_player.enabled"
+)
+_SAMPLE_PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+    "0000000b49444154789c6360000200000500017a5eab3f0000000049454e44ae42"
+    "6082"
 )
 _SHUFFLE_MODES = {
     avrcp.ApplicationSetting.ShuffleOnOffStatus.ALL_TRACKS_SHUFFLE: True,
@@ -232,6 +239,15 @@ class AvrcpTest(navi_test_base.TwoDevicesTestBase):
         wave_file.writeframes(bytes(48000 * 2 * duration_seconds))
       self.dut.adb.push([local_file.name, path_on_device])
 
+  def _generate_and_push_image_file(self, path_on_device: str) -> None:
+    # 1x1 transparent PNG (valid hex)
+    with tempfile.NamedTemporaryFile(
+        delete=(sys.platform != "win32")
+    ) as local_file:
+      local_file.write(_SAMPLE_PNG)
+      local_file.flush()
+      self.dut.adb.push([local_file.name, path_on_device])
+
   async def _avrcp_key_click(
       self,
       ref_avrcp_protocol: avrcp.Protocol,
@@ -340,6 +356,20 @@ class AvrcpTest(navi_test_base.TwoDevicesTestBase):
     """
     ref_avrcp_protocol, _ = await self._setup_a2dp_connection([_A2dpCodec.SBC])
 
+    # Trigger an A2DP playback session to make sure the volume control is
+    # ready.
+    with self.dut.bl4a.register_callback(bl4a_api.Module.A2DP) as dut_a2dp_cb:
+      self.logger.info("[DUT] Start audio.")
+      self.dut.bt.audioPlaySine()
+      if not self.dut.bt.isA2dpPlaying(self.ref.address):
+        self.logger.info("[DUT] Wait for A2DP playing state.")
+        await dut_a2dp_cb.wait_for_event(
+            bl4a_api.A2dpPlayingStateChanged(
+                address=self.ref.address,
+                state=android_constants.A2dpState.PLAYING,
+            )
+        )
+
     ref_avrcp_delegator = ref_avrcp_protocol.delegate
     assert isinstance(ref_avrcp_delegator, AvrcpDelegate)
 
@@ -348,6 +378,9 @@ class AvrcpTest(navi_test_base.TwoDevicesTestBase):
 
     self.logger.info("[DUT] Get min volume.")
     dut_min_volume = self.dut.bt.getMinVolume(_StreamType.MUSIC)
+
+    self.logger.info("[DUT] Set current volume to %d.", dut_max_volume // 2)
+    self.dut.bt.setVolume(_StreamType.MUSIC, dut_max_volume // 2)
 
     def android_to_avrcp_volume(volume: int) -> int:
       # Android JVM uses ROUND_HALF_UP policy, while Python uses ROUND_HALF_EVEN
@@ -373,10 +406,6 @@ class AvrcpTest(navi_test_base.TwoDevicesTestBase):
           )
       )
 
-    # DUT's VCS client might not be stable at the beginning. If we set volume
-    # immediately, the volume might not be set correctly.
-    await asyncio.sleep(_PREPARE_TIME_SECONDS)
-
     with self.dut.bl4a.register_callback(bl4a_api.Module.AUDIO) as dut_audio_cb:
       for dut_expected_volume in range(dut_min_volume, dut_max_volume + 1):
         if self.dut.bt.getVolume(_StreamType.MUSIC) == dut_expected_volume:
@@ -393,14 +422,19 @@ class AvrcpTest(navi_test_base.TwoDevicesTestBase):
           ref_avrcp_protocol.notify_volume_changed(ref_expected_volume)
 
         self.logger.info("[DUT] Wait for volume changed.")
-        volume_changed_event = await dut_audio_cb.wait_for_event(
+        await dut_audio_cb.wait_for_event(
             bl4a_api.VolumeChanged(
-                stream_type=_StreamType.MUSIC, volume_value=matcher.ANY
+                stream_type=_StreamType.MUSIC, volume_value=dut_expected_volume
             ),
         )
-
-        self.logger.info("[DUT] Check the volume.")
-        self.assertEqual(volume_changed_event.volume_value, dut_expected_volume)
+        self.assertEmpty(
+            [
+                event
+                for event in dut_audio_cb.get_all_events(bl4a_api.VolumeChanged)
+                if event.stream_type == _StreamType.MUSIC
+            ],
+            "Multiple volume changed events found.",
+        )
 
         # There won't be volume changed events on REF as issuer.
         self.logger.info("[REF] Wait for volume changed.")
@@ -894,7 +928,7 @@ class AvrcpTest(navi_test_base.TwoDevicesTestBase):
 
       self.logger.info("[REF] Browse now playing.")
       items = await browsing_channel.get_folder_items(
-          scope=avrcp.Scope.NOW_PLAYING  # pytype: disable=wrong-arg-types
+          scope=avrcp.Scope.NOW_PLAYING
       )
       self.assertLen(items, 1)
       item = items[0]
@@ -933,7 +967,7 @@ class AvrcpTest(navi_test_base.TwoDevicesTestBase):
 
       self.logger.info("[REF] Browse now playing again.")
       items = await browsing_channel.get_folder_items(
-          scope=avrcp.Scope.NOW_PLAYING  # pytype: disable=wrong-arg-types
+          scope=avrcp.Scope.NOW_PLAYING
       )
       self.assertLen(items, 2)
       item = items[1]
@@ -949,6 +983,187 @@ class AvrcpTest(navi_test_base.TwoDevicesTestBase):
       self.assertEqual(
           item.attributes[avrcp.MediaAttributeId.ALBUM_NAME],
           new_media_item.album,
+      )
+
+  async def test_cover_art(self) -> None:
+    """Tests AVRCP Cover Art by playing a track from the DUT.
+
+    Test steps:
+      1. Push a test image to the DUT.
+      2. Play a media item with the test image as artwork on the DUT.
+      3. Connect A2DP and AVRCP.
+      4. Retrieve the now playing items and get the Cover Art Image Handle.
+      5. Discover the BIP SDP record on the DUT and get the L2CAP PSM.
+      6. Connect to the BIP server using CoverArtClient.
+      7. Retrieve and verify the image properties.
+      8. Retrieve the image itself and verify it matches the pushed image.
+    """
+    # Early skip if AVRCP version is set and is < 1.6
+    avrcp_version_prop = self.dut.getprop(
+        android_constants.Property.AVRCP_VERSION
+    )
+    if avrcp_version_prop:
+      avrcp_version = _AVRCP_VERSION_MAP.get(avrcp_version_prop)
+      if avrcp_version and avrcp_version < (1, 6):
+        self.skipTest(
+            f"AVRCP version is {avrcp_version_prop}, Cover Art requires 1.6+"
+        )
+
+    player_cb = self.dut.bl4a.register_callback(bl4a_api.Module.PLAYER)
+    self.test_case_context.enter_context(player_cb)
+
+    user_id = self.dut.adb.current_user_id
+    image_path_on_device = f"/data/media/{user_id}/Music/cover.png"
+    self._generate_and_push_image_file(image_path_on_device)
+
+    audio_path_on_device = f"/data/media/{user_id}/Music/cover_art_audio.wav"
+    self._generate_and_push_wave_file(audio_path_on_device)
+
+    audio_uri = "/storage/self/primary/Music/cover_art_audio.wav"
+    artwork_content_uri = f"content://{android_constants.PACKAGE_NAME_BLUETOOTH_SNIPPET}.FileProvider/shares/Music/cover.png"
+    track_with_cover = bl4a_api.MediaItem(
+        title="Track with Cover",
+        artist="Artist",
+        album="Album",
+        uri=audio_uri,
+        artwork_uri=artwork_content_uri,
+    )
+
+    self.logger.info("[DUT] Play media item with cover art.")
+    self.dut.bl4a.play_media_item(track_with_cover)
+
+    self.logger.info("[DUT] Wait for playback started.")
+    await player_cb.wait_for_event(
+        bl4a_api.PlayerIsPlayingChanged(is_playing=True)
+    )
+
+    # Connect A2DP and AVRCP
+    ref_avrcp_protocol, _ = await self._setup_a2dp_connection(
+        [_A2dpCodec.SBC],
+        ref_features=(
+            avrcp.ControllerFeatures.CATEGORY_1
+            | avrcp.ControllerFeatures.SUPPORTS_BROWSING
+        ),
+    )
+
+    # Find the ACL connection
+    ref_acl_connection = self.ref.device.find_connection_by_bd_addr(
+        hci.Address(self.dut.address),
+        transport=core.PhysicalTransport.BR_EDR,
+    )
+    assert ref_acl_connection, "Failed to find ACL connection"
+
+    async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+      self.logger.info("[REF] Connect Browsing Channel.")
+      browsing_channel = await avrcp_ext.BrowsingController.connect(
+          ref_acl_connection
+      )
+
+      self.logger.info("[REF] Get media players.")
+      players = await browsing_channel.get_folder_items(
+          scope=avrcp.Scope.MEDIA_PLAYER_LIST
+      )
+      self.assertLen(players, 1)
+      player = players[0]
+      assert isinstance(player, avrcp_ext.Player)
+
+      self.logger.info("[REF] Set addressed player.")
+      await ref_avrcp_protocol.send_avrcp_command(
+          avc.CommandFrame.CommandType.CONTROL,
+          avrcp.SetAddressedPlayerCommand(player_id=player.player_id),
+      )
+
+      # Now connect to the BIP server first, so that the DUT knows we support
+      # Cover Art and won't filter out the handle.
+      self.logger.info("[REF] Find BIP SDP record.")
+      avrcp_sdp_records = await avrcp_ext.TargetServiceSdpRecord.find(
+          ref_acl_connection
+      )
+      self.assertLen(avrcp_sdp_records, 1)
+      avrcp_sdp_record = avrcp_sdp_records[0]
+      if avrcp_sdp_record.avrcp_version < (1, 6):
+        self.skipTest(
+            f"AVRCP version is {avrcp_sdp_record.avrcp_version}, Cover Art"
+            " requires 1.6+"
+        )
+      assert (
+          avrcp_sdp_record.bip_goep_l2cap_psm is not None
+      ), "BIP L2CAP PSM is missing"
+
+      self.logger.info("[REF] Connect BIP L2CAP channel.")
+      bip_bearer = await ref_acl_connection.create_l2cap_channel(
+          l2cap.ClassicChannelSpec(
+              psm=avrcp_sdp_record.bip_goep_l2cap_psm,
+              mode=l2cap.TransmissionMode.ENHANCED_RETRANSMISSION,
+              fcs_enabled=True,
+          )
+      )
+
+      bip_client = avrcp_ext.CoverArtClient(bip_bearer)
+      self.logger.info("[REF] Connect BIP OBEX session.")
+      await bip_client.connect()
+
+      self.logger.info(
+          "[REF] Get element attributes for currently playing track."
+      )
+      attrs = await ref_avrcp_protocol.get_element_attributes(
+          element_identifier=0,
+          attribute_ids=[
+              avrcp.MediaAttributeId.TITLE,
+              avrcp.MediaAttributeId.DEFAULT_COVER_ART,
+          ],
+      )
+      self.logger.info("Retrieved attributes: %s", attrs)
+
+      cover_art_handle = next(
+          (
+              attr.attribute_value
+              for attr in attrs
+              if attr.attribute_id == avrcp.MediaAttributeId.DEFAULT_COVER_ART
+          ),
+          None,
+      )
+
+      assert (
+          cover_art_handle is not None
+      ), "Cover Art Handle is missing in element attributes"
+      self.logger.info("Found Cover Art Handle: %s", cover_art_handle)
+      self.assertTrue(cover_art_handle.isdigit() and len(cover_art_handle) == 7)
+
+      self.logger.info("[REF] Get Image Properties.")
+      properties = await bip_client.get_image_properties(cover_art_handle)
+      self.logger.info(
+          "Image Properties: %s", properties.decode("utf-8", errors="replace")
+      )
+      try:
+        root = ET.fromstring(properties)
+      except ET.ParseError as e:
+        self.fail(f"Failed to parse image properties XML: {e}")
+
+      self.assertEqual(root.tag, "image-properties")
+      self.assertEqual(root.attrib.get("handle"), cover_art_handle)
+
+      images = root.findall("native") + root.findall("variant")
+      self.assertNotEmpty(
+          images, "No <native> or <variant> elements found in properties"
+      )
+      self.assertTrue(
+          any(img.attrib.get("encoding") == "JPEG" for img in images),
+          "Expected JPEG image format in properties",
+      )
+
+      self.logger.info("[REF] Get Image.")
+      image_data = await bip_client.get_image(cover_art_handle)
+      self.logger.info("Retrieved image size: %d", len(image_data))
+
+      # Android's Cover Art service scales the image to 200x200 and always
+      # compresses it to JPEG (quality 100) before sending, regardless of the
+      # original format (e.g. PNG). So we expect a valid JPEG header.
+      self.assertGreater(len(image_data), 500)
+      self.assertStartsWith(
+          image_data,
+          b"\xff\xd8\xff",
+          "Image data does not start with JPEG magic bytes",
       )
 
   @navi_test_base.retry(3)
@@ -985,7 +1200,7 @@ class AvrcpTest(navi_test_base.TwoDevicesTestBase):
               avrcp.ApplicationSetting.RepeatModeStatus.ALL_TRACK_REPEAT,
               avrcp.ApplicationSetting.RepeatModeStatus.GROUP_REPEAT,
           ],
-          supported_settings[avrcp.ApplicationSetting.AttributeId.REPEAT_MODE],  # pytype: disable=unsupported-operands
+          supported_settings[avrcp.ApplicationSetting.AttributeId.REPEAT_MODE],
       )
       self.assertContainsSubset(
           [
@@ -994,14 +1209,14 @@ class AvrcpTest(navi_test_base.TwoDevicesTestBase):
               avrcp.ApplicationSetting.ShuffleOnOffStatus.GROUP_SHUFFLE,
           ],
           supported_settings[
-              avrcp.ApplicationSetting.AttributeId.SHUFFLE_ON_OFF  # pytype: disable=unsupported-operands
+              avrcp.ApplicationSetting.AttributeId.SHUFFLE_ON_OFF
           ],
       )
 
       self.logger.info("[REF] Get current player application setting values.")
       current_settings = await ref_avrcp_protocol.get_player_app_settings([
-          avrcp.ApplicationSetting.AttributeId.REPEAT_MODE,  # pytype: disable=wrong-arg-types
-          avrcp.ApplicationSetting.AttributeId.SHUFFLE_ON_OFF,  # pytype: disable=wrong-arg-types
+          avrcp.ApplicationSetting.AttributeId.REPEAT_MODE,
+          avrcp.ApplicationSetting.AttributeId.SHUFFLE_ON_OFF,
       ])
       self.assertEqual(
           current_settings[avrcp.ApplicationSetting.AttributeId.REPEAT_MODE],

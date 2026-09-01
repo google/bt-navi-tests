@@ -603,8 +603,8 @@ class ClassicTest(test_base.DualDeviceTestBase):
           asyncio.get_running_loop().create_future() for _ in range(2)
       ]
       for connection, link_key_result in zip(connections, link_key_results):
-        connection.once(
-            connection.EVENT_LINK_KEY,
+        connection.device.once(
+            connection.device.EVENT_KEY_STORE_UPDATE,
             functools.partial(link_key_result.set_result, None),
         )
 
@@ -724,8 +724,8 @@ class ClassicTest(test_base.DualDeviceTestBase):
           connection.EVENT_CLASSIC_PAIRING_FAILURE,
           pairing_future.set_result,
       )
-      connection.once(
-          connection.EVENT_LINK_KEY,
+      connection.device.once(
+          connection.device.EVENT_KEY_STORE_UPDATE,
           functools.partial(link_key_future.set_result, None),
       )
 

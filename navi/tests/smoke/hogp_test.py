@@ -473,6 +473,175 @@ class HogpTest(navi_test_base.TwoDevicesTestBase):
             lambda: mouse_characteristic_subscribers[0] is not None
         )
 
+  async def test_get_report(self) -> None:
+    """Tests HOGP get report.
+
+    Test steps:
+      1. Establish the HID connection.
+      2. Get the report with report type INPUT_REPORT and report ID 1
+      (Keyboard).
+      3. Verify the report is retrieved successfully.
+    """
+    await self.test_connect()
+
+    report_id = 1
+
+    dut_hid_cb = self.dut.bl4a.register_callback(bl4a_api.Module.HID_HOST)
+    self.test_case_context.push(dut_hid_cb)
+
+    self.logger.info("[DUT] Get HOGP report for Keyboard (ID 1)")
+    self.dut.bt.getHidHostReport(
+        self.ref.random_address,
+        hid.ReportType.INPUT_REPORT,
+        report_id,
+        0,
+    )
+
+    self.logger.info("[DUT] Wait for HidHostReport event")
+    event = await dut_hid_cb.wait_for_event(bl4a_api.HidHostReport)
+
+    self.logger.info("[DUT] Verify report data")
+    self.assertEqual(event.address, self.ref.random_address)
+    self.assertSequenceEqual(event.report, [report_id] + [0] * 8)
+
+  async def test_set_report(self) -> None:
+    """Tests HOGP set report.
+
+    Test steps:
+      1. Establish the HID connection.
+      2. Set the report with report type INPUT_REPORT and report ID 1.
+      3. Verify the handshake status is successful.
+    """
+    await self.test_connect()
+
+    report_id = 1
+    data = [0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09]
+    report_hex = bytes([report_id] + data).hex()
+
+    dut_hid_cb = self.dut.bl4a.register_callback(bl4a_api.Module.HID_HOST)
+    self.test_case_context.push(dut_hid_cb)
+
+    self.logger.info("[DUT] Set HOGP report")
+    self.dut.bt.setHidHostReport(
+        self.ref.random_address,
+        hid.ReportType.INPUT_REPORT,
+        report_hex,
+    )
+
+    self.logger.info("[DUT] Wait for handshake")
+    await dut_hid_cb.wait_for_event(
+        bl4a_api.HidHostHandshake(
+            address=self.ref.random_address,
+            status=hid.HandshakeMessage.ResultCode.SUCCESSFUL,
+        )
+    )
+
+    # Verify on Bumble side that the characteristic value was updated
+    async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+      self.logger.info("[REF] Verify characteristic value")
+      condition = asyncio.Condition()
+
+      @self.ref_keyboard_input_report_characteristic.on(
+          self.ref_keyboard_input_report_characteristic.EVENT_WRITE
+      )
+      async def on_write(*args, **kwargs) -> None:
+        del args, kwargs
+        async with condition:
+          condition.notify_all()
+
+      async with condition:
+        await condition.wait_for(
+            lambda: self.ref_keyboard_input_report_characteristic.value
+            == bytes(data)
+        )
+
+  async def test_get_protocol_mode(self) -> None:
+    """Tests HOGP get protocol mode.
+
+    Test steps:
+      1. Establish the HID connection.
+      2. Get the protocol mode.
+      3. Verify the protocol mode is REPORT_PROTOCOL.
+    """
+    await self.test_connect()
+
+    dut_hid_cb = self.dut.bl4a.register_callback(bl4a_api.Module.HID_HOST)
+    self.test_case_context.push(dut_hid_cb)
+
+    self.logger.info("[DUT] Get HOGP protocol mode")
+    self.dut.bt.getHidHostProtocolMode(self.ref.random_address)
+
+    self.logger.info("[DUT] Wait for protocol mode event")
+    await dut_hid_cb.wait_for_event(
+        bl4a_api.HidHostProtocolModeChanged(
+            address=self.ref.random_address,
+            protocol_mode=android_constants.HidHostProtocolMode.REPORT,
+        )
+    )
+
+  async def test_set_protocol_mode(self) -> None:
+    """Tests HOGP set protocol mode.
+
+    Test steps:
+      1. Establish the HID connection.
+      2. Set the protocol mode to BOOT_PROTOCOL.
+      3. Verify the handshake is successful.
+      4. Get the protocol mode and verify it is BOOT_PROTOCOL.
+      5. Set it back to REPORT_PROTOCOL.
+      6. Verify the handshake is successful.
+      7. Get the protocol mode and verify it is REPORT_PROTOCOL.
+    """
+    await self.test_connect()
+
+    dut_hid_cb = self.dut.bl4a.register_callback(bl4a_api.Module.HID_HOST)
+    self.test_case_context.push(dut_hid_cb)
+
+    self.logger.info("[DUT] Set HOGP protocol mode to BOOT_PROTOCOL")
+    self.dut.bt.setHidHostProtocolMode(
+        self.ref.random_address,
+        android_constants.HidHostProtocolMode.BOOT,
+    )
+
+    self.logger.info("[DUT] Wait for handshake")
+    await dut_hid_cb.wait_for_event(
+        bl4a_api.HidHostHandshake(
+            address=self.ref.random_address,
+            status=hid.HandshakeMessage.ResultCode.SUCCESSFUL,
+        )
+    )
+
+    self.logger.info("[DUT] Get protocol mode")
+    self.dut.bt.getHidHostProtocolMode(self.ref.random_address)
+    await dut_hid_cb.wait_for_event(
+        bl4a_api.HidHostProtocolModeChanged(
+            address=self.ref.random_address,
+            protocol_mode=android_constants.HidHostProtocolMode.BOOT,
+        )
+    )
+
+    self.logger.info("[DUT] Set HOGP protocol mode to REPORT_PROTOCOL")
+    self.dut.bt.setHidHostProtocolMode(
+        self.ref.random_address,
+        android_constants.HidHostProtocolMode.REPORT,
+    )
+
+    self.logger.info("[DUT] Wait for handshake")
+    await dut_hid_cb.wait_for_event(
+        bl4a_api.HidHostHandshake(
+            address=self.ref.random_address,
+            status=hid.HandshakeMessage.ResultCode.SUCCESSFUL,
+        )
+    )
+
+    self.logger.info("[DUT] Get protocol mode")
+    self.dut.bt.getHidHostProtocolMode(self.ref.random_address)
+    await dut_hid_cb.wait_for_event(
+        bl4a_api.HidHostProtocolModeChanged(
+            address=self.ref.random_address,
+            protocol_mode=android_constants.HidHostProtocolMode.REPORT,
+        )
+    )
+
 
 if __name__ == "__main__":
   test_runner.main()

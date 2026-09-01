@@ -252,6 +252,8 @@ class HidDeviceTest(navi_test_base.TwoDevicesTestBase):
             hid_ext.ReportType.INPUT_REPORT, report_id, 0
         )
     )
+    self.logger.info("[DUT] Wait for Get report request")
+    await dut_hid_cb.wait_for_event(bl4a_api.HidDeviceGetReportRequest)
 
     self.logger.info("[DUT] Reply report")
     self.dut.bt.hidDeviceReplyReport(
@@ -287,6 +289,8 @@ class HidDeviceTest(navi_test_base.TwoDevicesTestBase):
             hid_ext.ReportType.INPUT_REPORT, report_id, 0
         )
     )
+    self.logger.info("[DUT] Wait for Get report request")
+    await dut_hid_cb.wait_for_event(bl4a_api.HidDeviceGetReportRequest)
 
     self.logger.info("[DUT] Report error")
     self.dut.bt.hidDeviceReportError(

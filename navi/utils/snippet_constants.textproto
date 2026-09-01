@@ -16,6 +16,11 @@ constants {
 }
 
 constants {
+  name: "FIELD_PREVIOUS_STATE"
+  string_value: "previous_state"
+}
+
+constants {
   name: "FIELD_STATUS"
   string_value: "status"
 }
@@ -96,6 +101,16 @@ constants {
 }
 
 constants {
+  name: "FIELD_ARTWORK_URI"
+  string_value: "artwork_uri"
+}
+
+constants {
+  name: "FIELD_BUFFER_SIZE"
+  string_value: "bufferSize"
+}
+
+constants {
   name: "FIELD_ADDRESS_TYPE"
   string_value: "address_type"
 }
@@ -123,6 +138,16 @@ constants {
 constants {
   name: "FIELD_SOURCE"
   string_value: "source"
+}
+
+constants {
+  name: "FIELD_IS_SOURCE"
+  string_value: "is_source"
+}
+
+constants {
+  name: "FIELD_IS_SINK"
+  string_value: "is_sink"
 }
 
 constants {
@@ -225,6 +250,11 @@ constants {
 }
 
 constants {
+  name: "HID_DEVICE_ON_GET_REPORT"
+  string_value: "onGetReportRequest"
+}
+
+constants {
   name: "ACTIVE_DEVICE_CHANGED"
   string_value: "ACTIVE_DEVICE_CHANGED"
 }
@@ -232,6 +262,11 @@ constants {
 # =========================== #
 # BluetoothAdapterSnippet     #
 # =========================== #
+
+constants {
+  name: "TAK_STATE_CHANGED"
+  string_value: "TakStateChanged"
+}
 
 constants: {
   name: "ADAPTER_STATE_CHANGED"
@@ -628,6 +663,21 @@ constants {
 }
 
 constants {
+  name: "GATT_FIELD_INTERVAL"
+  string_value: "interval"
+}
+
+constants {
+  name: "GATT_FIELD_LATENCY"
+  string_value: "latency"
+}
+
+constants {
+  name: "GATT_FIELD_SUPERVISION_TIMEOUT"
+  string_value: "supervision_timeout"
+}
+
+constants {
   name: "GATT_FIELD_CHARACTERISTICS"
   string_value: "characteristics"
 }
@@ -712,6 +762,11 @@ constants {
   string_value: "GATT_SUBRATE_CHANGED"
 }
 
+constants {
+  name: "GATT_CONNECTION_UPDATED"
+  string_value: "GATT_CONNECTION_UPDATED"
+}
+
 # =========================== #
 # BluetoothGattServerSnippet  #
 # =========================== #
@@ -734,6 +789,11 @@ constants {
 constants {
   name: "GATT_FIELD_RESPONSE_NEEDED"
   string_value: "response_needed"
+}
+
+constants {
+  name: "GATT_FIELD_EXECUTE"
+  string_value: "execute"
 }
 
 constants {
@@ -764,6 +824,21 @@ constants {
 constants {
   name: "GATT_SERVER_DESCRIPTOR_WRITE_REQUEST"
   string_value: "GATT_SERVER_DESCRIPTOR_WRITE_REQUEST"
+}
+
+constants {
+  name: "GATT_SERVER_EXECUTE_WRITE"
+  string_value: "GATT_SERVER_EXECUTE_WRITE"
+}
+
+constants {
+  name: "GATT_SERVER_MTU_CHANGED"
+  string_value: "GATT_SERVER_MTU_CHANGED"
+}
+
+constants {
+  name: "GATT_SERVER_CONNECTION_UPDATED"
+  string_value: "GATT_SERVER_CONNECTION_UPDATED"
 }
 
 # ===================================== #
@@ -935,6 +1010,11 @@ constants {
 }
 
 constants {
+  name: "HEAD_TRACKER_AVAILABLE_CHANGED"
+  string_value: "HEAD_TRACKER_AVAILABLE_CHANGED"
+}
+
+constants {
   name: "MODE"
   string_value: "mode"
 }
@@ -997,6 +1077,16 @@ constants: {
 # ===================== #
 # TelecomSnippet        #
 # ===================== #
+
+constants {
+  name: "CALL_ENDPOINT_CHANGED"
+  string_value: "CALL_ENDPOINT_CHANGED"
+}
+
+constants {
+  name: "FIELD_ENDPOINT"
+  string_value: "endpoint"
+}
 
 constants {
   name: "CONTACT_NAME"
@@ -1213,6 +1303,20 @@ constants {
 constants {
   name: "SET_PRESET_NAME_FAILED"
   string_value: "SET_PRESET_NAME_FAILED"
+}
+
+# =========================================== #
+# BluetoothCsipSetCoordinatorSnippet          #
+# =========================================== #
+
+constants {
+  name: "CSIS_SET_MEMBER_AVAILABLE"
+  string_value: "CSIS_SET_MEMBER_AVAILABLE"
+}
+
+constants {
+  name: "FIELD_GROUP_ID"
+  string_value: "group_id"
 }
 
 # ============================ #
@@ -1460,5 +1564,20 @@ constants {
 constants {
   name: "SOCKET_SETTINGS_RFCOMM_SERVICE_NAME"
   string_value: "rfcomm_service_name"
+}
+
+constants {
+  name: "GATT_RELIABLE_WRITE_COMPLETED"
+  string_value: "GATT_RELIABLE_WRITE_COMPLETED"
+}
+
+constants {
+  name: "DISCOVERY_STARTED"
+  string_value: "DISCOVERY_STARTED"
+}
+
+constants {
+  name: "DISCOVERY_FINISHED"
+  string_value: "DISCOVERY_FINISHED"
 }
 

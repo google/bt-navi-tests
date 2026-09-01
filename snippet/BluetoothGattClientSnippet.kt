@@ -119,6 +119,25 @@ class BluetoothGattClientSnippet : Snippet {
       }
     }
 
+    override fun onDescriptorRead(
+      gatt: BluetoothGatt,
+      descriptor: BluetoothGattDescriptor,
+      status: Int,
+      value: ByteArray,
+    ) {
+      Log.i(
+        TAG,
+        "onDescriptorRead address=${gatt.device.address}, descriptor=${descriptor.uuid}, status=$status",
+      )
+      postSnippetEvent(callbackId, SnippetConstants.GATT_DESCRIPTOR_READ) {
+        putString(SnippetConstants.FIELD_DEVICE, gatt.device.address)
+        putInt(SnippetConstants.FIELD_HANDLE, descriptor.characteristic.instanceId)
+        putString(SnippetConstants.FIELD_UUID, descriptor.uuid.toString())
+        putInt(SnippetConstants.FIELD_STATUS, status)
+        putByteArray(SnippetConstants.FIELD_VALUE, value)
+      }
+    }
+
     override fun onDescriptorWrite(
       gatt: BluetoothGatt,
       descriptor: BluetoothGattDescriptor,
@@ -153,6 +172,30 @@ class BluetoothGattClientSnippet : Snippet {
       postSnippetEvent(callbackId, SnippetConstants.GATT_SUBRATE_CHANGED) {
         putString(SnippetConstants.FIELD_DEVICE, gatt.device.address)
         putInt(SnippetConstants.GATT_FIELD_SUBRATE_MODE, subrateMode)
+        putInt(SnippetConstants.FIELD_STATUS, status)
+      }
+    }
+
+    override fun onReliableWriteCompleted(gatt: BluetoothGatt, status: Int) {
+      Log.i(TAG, "onReliableWriteCompleted address=${gatt.device.address}, status=$status")
+      postSnippetEvent(callbackId, SnippetConstants.GATT_RELIABLE_WRITE_COMPLETED) {
+        putString(SnippetConstants.FIELD_DEVICE, gatt.device.address)
+        putInt(SnippetConstants.FIELD_STATUS, status)
+      }
+    }
+
+    override fun onConnectionUpdated(
+      gatt: BluetoothGatt,
+      interval: Int,
+      latency: Int,
+      supervisionTimeout: Int,
+      status: Int,
+    ) {
+      postSnippetEvent(callbackId, SnippetConstants.GATT_CONNECTION_UPDATED) {
+        putString(SnippetConstants.FIELD_DEVICE, gatt.device.address)
+        putInt(SnippetConstants.GATT_FIELD_INTERVAL, interval)
+        putInt(SnippetConstants.GATT_FIELD_LATENCY, latency)
+        putInt(SnippetConstants.GATT_FIELD_SUPERVISION_TIMEOUT, supervisionTimeout)
         putInt(SnippetConstants.FIELD_STATUS, status)
       }
     }
@@ -325,6 +368,27 @@ class BluetoothGattClientSnippet : Snippet {
   }
 
   /**
+   * Reads [descriptorUuid] descriptor of characteristic [characteristicHandle] on GATT client of
+   * [cookie], and returns true if the read operation was started successfully.
+   */
+  @Rpc(description = "Reads a characteristic descriptor")
+  fun gattReadDescriptor(
+    cookie: String,
+    characteristicHandle: Int,
+    descriptorUuid: String,
+  ): Boolean {
+    val client =
+      gattClients[cookie] ?: throw IllegalArgumentException("Client $cookie doesn't exist!")
+    val characteristic =
+      client.findCharacteristicByHandle(characteristicHandle)
+        ?: throw IllegalArgumentException("Invalid characteristic handle $characteristicHandle")
+    val descriptor =
+      characteristic.getDescriptor(UUID.fromString(descriptorUuid))
+        ?: throw IllegalArgumentException("Invalid descriptor UUID $descriptorUuid")
+    return client.readDescriptor(descriptor)
+  }
+
+  /**
    * Writes [value] to [descriptorUuid] descriptor of characteristic in [characteristicHandle] on
    * GATT client of [cookie], and returns the status code.
    */
@@ -381,6 +445,30 @@ class BluetoothGattClientSnippet : Snippet {
     val client =
       gattClients[cookie] ?: throw IllegalArgumentException("Client $cookie doesn't exist!")
     return client.requestSubrateMode(mode)
+  }
+
+  /** Begins a reliable write transaction for [cookie]. */
+  @Rpc(description = "Begins a reliable write transaction")
+  fun gattBeginReliableWrite(cookie: String): Boolean {
+    val client =
+      gattClients[cookie] ?: throw IllegalArgumentException("Client $cookie doesn't exist!")
+    return client.beginReliableWrite()
+  }
+
+  /** Executes the reliable write transaction for [cookie]. */
+  @Rpc(description = "Executes the reliable write transaction")
+  fun gattExecuteReliableWrite(cookie: String): Boolean {
+    val client =
+      gattClients[cookie] ?: throw IllegalArgumentException("Client $cookie doesn't exist!")
+    return client.executeReliableWrite()
+  }
+
+  /** Aborts the reliable write transaction for [cookie]. */
+  @Rpc(description = "Aborts the reliable write transaction")
+  fun gattAbortReliableWrite(cookie: String) {
+    val client =
+      gattClients[cookie] ?: throw IllegalArgumentException("Client $cookie doesn't exist!")
+    client.abortReliableWrite()
   }
 
   companion object {

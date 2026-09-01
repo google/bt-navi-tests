@@ -20,6 +20,7 @@ import collections
 from collections.abc import AsyncGenerator, Callable, Coroutine, Iterator, Sequence
 import contextlib
 import dataclasses
+import datetime
 import enum
 import functools
 import importlib
@@ -61,8 +62,9 @@ from navi.utils import logcat
 from navi.utils import matcher
 from navi.utils import retry as retry_lib
 from navi.utils import snippet_stub
+from navi.utils import usb_device
 
-
+_NAVI_TIMEOUT = "_NAVI_TIMEOUT"
 _NAVI_PARAMETERIZED = "_NAVI_PARAMETERIZED"
 _NAVI_REQUIRE_FLAG = "_NAVI_REQUIRE_FLAG"
 _SETUP_TIMEOUT_SECONDS = 15.0
@@ -72,7 +74,13 @@ RECORD_FULL_DATA = "record_full_data"
 DUMP_CROWN_LOG_ON_FAIL = "dump_crown_log_on_fail"
 CUSTOM_TEST_SESSION = "custom_test_session"
 PROPERTY_OVERRIDES = "property_overrides"
+# The delay in seconds for CrownDevice (currently only for PASS_THROUGH and
+# USB) to sleep between reset, mostly for settlement.
+CROWN_RESET_DELAY = "crown_reset_delay"
 _DEFAULT_STEP_TIMEOUT_SECONDS = 10.0
+# The original method name of the test case. This is used to record the test
+# method name in Sponge.
+_ORIGINAL_METHOD_NAME = "_original_method_name"
 
 _FUNC = TypeVar("_FUNC", bound=Callable[..., Any])
 
@@ -80,6 +88,7 @@ _FUNC = TypeVar("_FUNC", bound=Callable[..., Any])
 class CrownDriver(enum.StrEnum):
   ANDROID = "android"
   PASSTHROUGH = "passthrough"
+  USB = "usb"
   CF_ROOTCANAL = "cf_rootcanal"
 
 
@@ -180,20 +189,19 @@ class AndroidSnippetDeviceWrapper:
 
   def enable_debug(self) -> None:
     """Enables debug features if the build is userdebug or eng."""
-    build_type = self.getprop("ro.build.type")
-    if build_type in ("userdebug", "eng"):
+    if self.device.is_rootable:
+      self.device.root_adb()
       # Sync time.
       adb_snippets.sync_time(self.device)
       # Disable Selinux.
-      self.adb.shell("setenforce 0")
+      self.shell("setenforce 0")
       # Enable BT Snoop.
       adb_snippets.enable_btsnoop(self.device)
       # Enable BT verbose logging.
-      self.adb.shell("setprop persist.log.tag.bluetooth VERBOSE")
+      self.shell("setprop persist.log.tag.bluetooth VERBOSE")
     else:
       logging.warning(
-          "Device is not running a userdebug or eng build. Skipping automatic "
-          "debug configuration:\n"
+          "Device is not rootable. Skipping automatic debug configuration:\n"
           "1. Time synchronization was not performed (ensure DUT time matches "
           "host to prevent log timestamp issues).\n"
           "2. Bluetooth Snoop logs and verbose logging were not enabled "
@@ -262,12 +270,12 @@ class AndroidSnippetDeviceWrapper:
   def get_int_prop(self, prop_name: str) -> int | None:
     """Gets a property of the device."""
     text = self.getprop(prop_name)
-    if text.isdigit():
+    if not text:  # Empty string or None
+      return None
+    elif text.isdigit():
       return int(text)
     elif text.startswith("0x"):
       return int(text, 16)
-    elif not text:  # Empty string
-      return None
     else:
       raise ValueError(f"Invalid property value: {text}")
 
@@ -547,6 +555,25 @@ def skip(reason: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
   return wrapper
 
 
+def timeout(
+    duration: float | datetime.timedelta,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+  """Sets the async timeout for a test.
+
+  Args:
+    duration: Timeout duration.
+
+  Returns:
+    A wrapper patching test cases.
+  """
+
+  def wrapper(func: Callable[..., Any]) -> Callable[..., Any]:
+    setattr(func, _NAVI_TIMEOUT, duration)
+    return func
+
+  return wrapper
+
+
 class BaseTestBase(base_test.BaseTestClass, absltest.TestCase):
   """Base class for all test base classes. Should not be used directly."""
 
@@ -558,6 +585,7 @@ class BaseTestBase(base_test.BaseTestClass, absltest.TestCase):
   user_params: dict[str, Any]
   current_test_method: Callable[[], Any]
   custom_test_session: CustomTestSession | None = None
+  TEST_TIMEOUT_SECONDS: ClassVar[float] = 60.0
 
   def __init__(self, *args, **kwargs) -> None:
     super().__init__(*args, **kwargs)
@@ -586,9 +614,12 @@ class BaseTestBase(base_test.BaseTestClass, absltest.TestCase):
   def _async_test_wrapper(
       self,
       coro_factory: Callable[[], Coroutine[Any, Any, Any]],
+      timeout_sec: float,
   ) -> Any:
     try:
-      self.loop.run_until_complete(coro_factory())
+      self.loop.run_until_complete(
+          asyncio.wait_for(coro_factory(), timeout_sec)
+      )
     except (
         TimeoutError,
         bumble.core.TimeoutError,
@@ -635,7 +666,18 @@ class BaseTestBase(base_test.BaseTestClass, absltest.TestCase):
     """
     partial_method = functools.partial(test_method, *args, **kwargs)
     if inspect.iscoroutinefunction(test_method):
-      synced_func = functools.partial(self._async_test_wrapper, partial_method)
+      timeout_duration = getattr(
+          test_method,
+          _NAVI_TIMEOUT,
+          self.TEST_TIMEOUT_SECONDS,
+      )
+      if isinstance(timeout_duration, datetime.timedelta):
+        timeout_seconds = timeout_duration.total_seconds()
+      else:
+        timeout_seconds = float(timeout_duration)
+      synced_func = functools.partial(
+          self._async_test_wrapper, partial_method, timeout_seconds
+      )
     else:
       synced_func = partial_method
 
@@ -648,6 +690,10 @@ class BaseTestBase(base_test.BaseTestClass, absltest.TestCase):
     ):
       if attr_value := getattr(test_method, attr_name, None):
         setattr(synced_func, attr_name, attr_value)
+    # Stores the original function name before wrapping in functools.partial
+    # (which lacks __name__).
+    if method_name := getattr(test_method, "__name__", None):
+      setattr(synced_func, _ORIGINAL_METHOD_NAME, method_name)
     return synced_func
 
   @override
@@ -704,7 +750,9 @@ class BaseTestBase(base_test.BaseTestClass, absltest.TestCase):
       # Having the fields means that's patched by `@parameterized`.
       if hasattr(func, _NAVI_PARAMETERIZED):
         is_named, param_sets = getattr(func, _NAVI_PARAMETERIZED)
-        param_sets = cast(dict[str, Sequence[Any] | dict[str, Any]], param_sets)
+        param_sets = cast(
+            dict[str, tuple[Sequence[Any], dict[str, Any]]], param_sets
+        )
       else:
         # Not a parameterized test, just make it sync.
         self._generated_test_table[test_name] = self._make_sync_test(func)
@@ -818,6 +866,19 @@ class BaseTestBase(base_test.BaseTestClass, absltest.TestCase):
   def exec_one_test(self, test_name, test_method, record=None):
     # Save the test method for later use.
     self.current_test_method = cast(Callable[[], Any], test_method)
+    original_method_name = getattr(
+        test_method,
+        _ORIGINAL_METHOD_NAME,
+        getattr(test_method, "__name__", None),
+    )
+    if original_method_name:
+      self.record_data(
+          RecordData(
+              test_name=test_name,
+              test_class=self.TAG,
+              properties={"test_method": original_method_name},
+          )
+      )
     return super().exec_one_test(test_name, test_method, record)
 
   @contextlib.asynccontextmanager
@@ -911,7 +972,7 @@ class AndroidBumbleTestBase(BaseTestBase):
   dut: AndroidSnippetDeviceWrapper
   dut_wrapper_factory: Callable[
       [android_device.AndroidDevice], AndroidSnippetDeviceWrapper
-  ] = AndroidSnippetDeviceWrapper
+  ] = AndroidSnippetDeviceWrapper  # pyrefly: ignore[bad-assignment]
   _refs: Sequence[crown.CrownDevice] = ()
   NUM_REF_DEVICES: int
   test_case_log_handler: logging.FileHandler | None = None
@@ -959,22 +1020,46 @@ class AndroidBumbleTestBase(BaseTestBase):
             for controller in controllers[1:]
         ]
       case CrownDriver.PASSTHROUGH:
+        reset_delay = float(
+            self.user_params.get(CROWN_RESET_DELAY, 0.0) or 0.0
+        )
         controllers = self._get_android_controllers(1)
         self.dut = self.dut_wrapper_factory(controllers[0])
         self._refs = [
             await crown.CrownDevice.create(
                 crown.CrownAdapter(hci_spec),
                 make_config(),
+                reset_delay=reset_delay,
             )
             for hci_spec in self._get_passthrough_hci_specs()
+        ]
+      case CrownDriver.USB:
+        controllers = self._get_android_controllers(1)
+        self.dut = self.dut_wrapper_factory(controllers[0])
+        reset_delay = float(
+            self.user_params.get(CROWN_RESET_DELAY, 0.0)
+            or 0.0
+        )
+        usb_devices = cast(
+            list[usb_device.UsbDevice],
+            self.register_controller(
+                usb_device, min_number=self.NUM_REF_DEVICES
+            ),
+        )
+        self._refs = [
+            await crown.CrownDevice.create(
+                crown.CrownAdapter(device.hci_spec),
+                make_config(),
+                reset_delay=reset_delay,
+            )
+            for device in usb_devices
         ]
       case CrownDriver.CF_ROOTCANAL:
         controllers = self._get_android_controllers(1)
         self.dut = self.dut_wrapper_factory(controllers[0])
-        serial = self.dut.getprop("ro.serialno")
-        match = re.fullmatch(r"CUTTLEFISHCVD(\d+)", serial) if serial else None
-        instance_num = int(match.group(1)) if match else 1
-        vsock_port = 7300 + instance_num - 1
+        wifi_mac_prefix = self.dut.get_int_prop("ro.boot.wifi_mac_prefix")
+        port_offset = wifi_mac_prefix - 5554 if wifi_mac_prefix else 0
+        vsock_port = 7300 + port_offset
         netsim_port = int(
             self.dut.adb.forward(["tcp:0", f"vsock:2:{vsock_port}"])
         )
@@ -1195,6 +1280,7 @@ class AndroidBumbleTestBase(BaseTestBase):
       self.dut.device.take_bug_report()
     await super().async_teardown_class()
     for ref in self._refs:
+      await ref.close()
       ref.adapter.stop()
       if self.user_params.get(DUMP_CROWN_LOG_ON_FAIL) and has_error_or_fail:
         ref.adapter.dump_debug_logs(self.log_path)
@@ -1314,6 +1400,109 @@ class AndroidBumbleTestBase(BaseTestBase):
       return ref_dut_acl
 
   @retry_lib.retry_on_exception(initial_delay_sec=1, num_retries=3)
+  async def connect_le_from_ref(
+      self,
+      dut_address_type: (
+          android_constants.AddressTypeStatus | int
+      ) = android_constants.AddressTypeStatus.RANDOM,
+      ref_address_type: (
+          bumble.hci.OwnAddressType
+      ) = bumble.hci.OwnAddressType.RANDOM,
+      ref: crown.CrownDevice | None = None,
+      wait_for_dut_connected: bool = True,
+      timeout: float = _SETUP_TIMEOUT_SECONDS,  # pylint: disable=redefined-outer-name
+  ) -> bumble.device.Connection:
+    """Connects to DUT from REF over LE.
+
+    Starts legacy advertiser on DUT, connects from REF to DUT over LE, and
+    retries on failure.
+
+    Args:
+      dut_address_type: OwnAddressType advertised by DUT.
+      ref_address_type: OwnAddressType used by REF.
+      ref: The Bumble device to connect from. If None, first Bumble device will
+        be used.
+      wait_for_dut_connected: Whether to wait for AclConnected on DUT.
+      timeout: Timeout in seconds for setup steps.
+
+    Returns:
+      REF->DUT LE ACL connection instance.
+    """
+    if ref is None:
+      ref = self._refs[0]
+
+    match ref_address_type:
+      case bumble.hci.OwnAddressType.PUBLIC:
+        ref_addr = ref.address
+      case bumble.hci.OwnAddressType.RANDOM:
+        ref_addr = ref.random_address
+      case _:
+        ref_addr = ref.address
+
+    service_uuid = str(uuid.uuid4())
+    advertiser = await self.dut.bl4a.start_legacy_advertiser(
+        bl4a_api.LegacyAdvertiseSettings(
+            own_address_type=dut_address_type,
+            advertise_mode=android_constants.LegacyAdvertiseMode.LOW_LATENCY,
+            connectable=True,
+        ),
+        advertising_data=bl4a_api.AdvertisingData(service_uuids=[service_uuid]),
+    )
+    with advertiser:
+      async with self.assert_not_timeout(timeout):
+        if dut_address_type == android_constants.AddressTypeStatus.PUBLIC:
+          dut_addr = bumble.hci.Address(
+              self.dut.address, bumble.hci.AddressType.PUBLIC_DEVICE
+          )
+        else:
+          advertisements = asyncio.Queue[bumble.device.Advertisement]()
+
+          def on_advertisement(
+              advertisement: bumble.device.Advertisement,
+          ) -> None:
+            if (
+                service_uuids := advertisement.data.get(
+                    bumble.core.AdvertisingData.Type.COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS
+                )
+            ) and (service_uuid in service_uuids):
+              advertisements.put_nowait(advertisement)
+
+          ref.device.on(ref.device.EVENT_ADVERTISEMENT, on_advertisement)
+          try:
+            self.logger.info("[REF] Start scanning.")
+            await ref.device.start_scanning()
+            self.logger.info("[REF] Wait for finding DUT.")
+            advertisement = await advertisements.get()
+          finally:
+            self.logger.info("[REF] Stop scanning.")
+            await ref.device.stop_scanning()
+            ref.device.remove_listener(
+                ref.device.EVENT_ADVERTISEMENT, on_advertisement
+            )
+
+          dut_addr = advertisement.address
+          if dut_addr.is_random:
+            dut_addr.address_type = bumble.hci.AddressType.RANDOM_DEVICE
+          else:
+            dut_addr.address_type = bumble.hci.AddressType.PUBLIC_DEVICE
+
+        self.logger.info("[REF] Connect to DUT.")
+        with self.dut.bl4a.register_callback(bl4a_api.Module.ADAPTER) as dut_cb:
+          ref_dut_acl = await ref.device.connect_le(
+              dut_addr,
+              own_address_type=ref_address_type,
+          )
+          await ref_dut_acl.get_remote_le_features()
+          if wait_for_dut_connected:
+            await dut_cb.wait_for_event(
+                bl4a_api.AclConnected(
+                    address=ref_addr,
+                    transport=android_constants.Transport.LE,
+                ),
+            )
+        return ref_dut_acl
+
+  @retry_lib.retry_on_exception(initial_delay_sec=1, num_retries=3)
   async def le_connect_and_pair(
       self,
       ref_address_type: bumble.hci.OwnAddressType,
@@ -1396,43 +1585,14 @@ class AndroidBumbleTestBase(BaseTestBase):
             )
         )
       else:
-        service_uuid = str(uuid.uuid4())
-        advertiser = await self.dut.bl4a.start_legacy_advertiser(
-            bl4a_api.LegacyAdvertiseSettings(
-                own_address_type=android_constants.AddressTypeStatus.RANDOM,
-                connectable=True,
-            ),
-            advertising_data=bl4a_api.AdvertisingData(
-                service_uuids=[service_uuid]
-            ),
+        ref_dut_acl = await self.connect_le_from_ref(
+            dut_address_type=android_constants.AddressTypeStatus.RANDOM,
+            ref_address_type=ref_address_type,
+            ref=ref,
+            wait_for_dut_connected=False,
+            timeout=_SETUP_TIMEOUT_SECONDS,
         )
-        with advertiser:
-          advertisements = asyncio.Queue[bumble.device.Advertisement]()
-
-          @ref.device.on(ref.device.EVENT_ADVERTISEMENT)
-          def _(advertisement: bumble.device.Advertisement) -> None:
-            if (
-                service_uuids := advertisement.data.get(
-                    bumble.core.AdvertisingData.Type.COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS
-                )
-            ) and (service_uuid in service_uuids):
-              advertisements.put_nowait(advertisement)
-
-          self.logger.info("[REF] Start scanning.")
-          await ref.device.start_scanning()
-          self.logger.info("[REF] Wait for finding DUT.")
-          advertisement = await advertisements.get()
-          self.logger.info("[REF] Stop scanning.")
-          await ref.device.stop_scanning()
-          ref_dut_acl = await ref.device.connect(
-              advertisement.address,
-              transport=bumble.core.PhysicalTransport.LE,
-              own_address_type=ref_address_type,
-              timeout=_SETUP_TIMEOUT_SECONDS,
-          )
-          async with self.assert_not_timeout(_SETUP_TIMEOUT_SECONDS):
-            await ref_dut_acl.get_remote_le_features()
-          pair_task = asyncio.create_task(ref_dut_acl.pair())
+        pair_task = asyncio.create_task(ref_dut_acl.pair())
 
       self.logger.info("[DUT] Wait for pairing request.")
       await dut_cb.wait_for_event(

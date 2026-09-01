@@ -29,7 +29,6 @@ from navi.utils import android_constants
 from navi.utils import bl4a_api
 from navi.utils import bluetooth_constants
 from navi.utils import constants
-from navi.utils import retry
 
 _DEFAULT_STEP_TIMEOUT_SECONDS = 10.0
 
@@ -76,7 +75,6 @@ class GattServerTest(navi_test_base.TwoDevicesTestBase):
   """Tests of GATT server implementation on Pixel."""
 
   dut_gatt_server: bl4a_api.GattServer
-  dut_advertiser: bl4a_api.LegacyAdvertiser
 
   @override
   async def async_setup_class(self) -> None:
@@ -90,32 +88,10 @@ class GattServerTest(navi_test_base.TwoDevicesTestBase):
     self.logger.info("[DUT] Open server.")
     self.dut_gatt_server = self.dut.bl4a.create_gatt_server()
 
-    self.logger.info("[DUT] Start advertising.")
-    self.dut_advertiser = await self.dut.bl4a.start_legacy_advertiser(
-        bl4a_api.LegacyAdvertiseSettings(
-            own_address_type=android_constants.AddressTypeStatus.PUBLIC,
-            advertise_mode=android_constants.LegacyAdvertiseMode.LOW_LATENCY,
-        ),
-    )
-
   @override
   async def async_teardown_test(self) -> None:
     await super().async_teardown_test()
     self.dut_gatt_server.close()
-    self.dut_advertiser.stop()
-
-  @retry.retry_on_exception()
-  async def _make_le_connection(self) -> bumble.device.Connection:
-    """Connects to DUT over LE and returns the connection."""
-    ref_dut_acl = await self.ref.device.connect(
-        f"{self.dut.address}/P",
-        transport=bumble.core.BT_LE_TRANSPORT,
-        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
-        own_address_type=hci.OwnAddressType.RANDOM,
-    )
-    async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
-      await ref_dut_acl.get_remote_le_features()
-    return ref_dut_acl
 
   async def test_add_service(self) -> None:
     """Tests opening a GATT server on DUT, adding a service discovered by REF.
@@ -130,7 +106,11 @@ class GattServerTest(navi_test_base.TwoDevicesTestBase):
     await self.dut_gatt_server.add_service(_GATT_SERVICE)
 
     self.logger.info("[REF] Connect to DUT.")
-    ref_dut_acl = await self._make_le_connection()
+    ref_dut_acl = await self.connect_le_from_ref(
+        dut_address_type=android_constants.AddressTypeStatus.PUBLIC,
+        ref_address_type=hci.OwnAddressType.RANDOM,
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
 
     async with bumble.device.Peer(ref_dut_acl) as peer:
       self.logger.info("[REF] Check services.")
@@ -184,7 +164,11 @@ class GattServerTest(navi_test_base.TwoDevicesTestBase):
     await self.dut_gatt_server.add_service(_GATT_SERVICE)
 
     self.logger.info("[REF] Connect to DUT.")
-    ref_dut_acl = await self._make_le_connection()
+    ref_dut_acl = await self.connect_le_from_ref(
+        dut_address_type=android_constants.AddressTypeStatus.PUBLIC,
+        ref_address_type=hci.OwnAddressType.RANDOM,
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
 
     async with bumble.device.Peer(ref_dut_acl) as peer:
       characteristic = peer.get_characteristics_by_uuid(
@@ -235,7 +219,11 @@ class GattServerTest(navi_test_base.TwoDevicesTestBase):
     await self.dut_gatt_server.add_service(_GATT_SERVICE)
 
     self.logger.info("[REF] Connect to DUT.")
-    ref_dut_acl = await self._make_le_connection()
+    ref_dut_acl = await self.connect_le_from_ref(
+        dut_address_type=android_constants.AddressTypeStatus.PUBLIC,
+        ref_address_type=hci.OwnAddressType.RANDOM,
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
 
     async with bumble.device.Peer(ref_dut_acl) as peer:
       characteristic = peer.get_characteristics_by_uuid(
@@ -293,7 +281,11 @@ class GattServerTest(navi_test_base.TwoDevicesTestBase):
       self.fail("Cannot find characteristic.")
 
     self.logger.info("[REF] Connect to DUT.")
-    ref_dut_acl = await self._make_le_connection()
+    ref_dut_acl = await self.connect_le_from_ref(
+        dut_address_type=android_constants.AddressTypeStatus.PUBLIC,
+        ref_address_type=hci.OwnAddressType.RANDOM,
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
 
     async with bumble.device.Peer(ref_dut_acl) as peer:
       ref_characteristic = peer.get_characteristics_by_uuid(
