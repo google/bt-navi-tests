@@ -572,9 +572,8 @@ class MapTest(navi_test_base.TwoDevicesTestBase):
     status_line = next(
         (line for line in lines if line.startswith("STATUS:")), None
     )
-    self.assertIsNotNone(
-        status_line, f"STATUS line not found in bMessage: {body!r}"
-    )
+    if status_line is None:
+      self.fail(f"STATUS line not found in bMessage: {body!r}")
     self.assertEqual(status_line.split(":", 1)[1], "READ")
 
 

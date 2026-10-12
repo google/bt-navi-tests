@@ -1158,12 +1158,14 @@ class HfpAgTest(navi_test_base.TwoDevicesTestBase):
             self.dut.bt.setVolume(_STREAM_TYPE_CALL, expected_volume)
 
             self.logger.info("[REF] Wait for volume changed event.")
+
+            def _is_target_volume(target_volume: int = expected_volume) -> bool:
+              return ref_hfp_protocol.speaker_volume == target_volume
+
             async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
               async with ref_hfp_protocol.speaker_volume_condition:
                 await ref_hfp_protocol.speaker_volume_condition.wait_for(
-                    lambda target_volume=expected_volume: (
-                        ref_hfp_protocol.speaker_volume == target_volume
-                    )
+                    _is_target_volume
                 )
           else:
             self.logger.info("[REF] Set volume to %d.", expected_volume)

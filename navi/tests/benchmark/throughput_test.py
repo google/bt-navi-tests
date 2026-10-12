@@ -461,6 +461,8 @@ class ThroughputTest(navi_test_base.TwoDevicesTestBase):
                   uuid=_RFCOMM_UUID,
               ),
           )
+        assert ref_dut_dlc is not None
+        assert dut_ref_dlc is not None
         ref_dut_dlc.sink = ref_sdu_rx_queue.put_nowait
         # Set the threshold to 6 to avoid running out of buffer.
         ref_dut_dlc.rx_credits_threshold = _RX_THRESHOLD

@@ -2020,13 +2020,14 @@ class A2dpSourceTest(navi_test_base.TwoDevicesTestBase):
     discover_response: avdtp.Discover_Response = (
         await avdtp_protocol.send_command(avdtp.Discover_Command())
     )
+    endpoint_entries = list(discover_response.endpoints)
     self.logger.info(
         "[REF] Discovered %d endpoints on DUT.",
-        len(discover_response.endpoints),
+        len(endpoint_entries),
     )
 
     discovered_endpoints: list[avdtp.DiscoveredStreamEndPoint] = []
-    for endpoint_entry in discover_response.endpoints:
+    for endpoint_entry in endpoint_entries:
       self.logger.info(
           "[REF] Waiting %.1fs before querying capabilities for SEID %d...",
           delay_per_step,
