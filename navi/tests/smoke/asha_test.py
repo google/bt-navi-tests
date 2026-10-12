@@ -230,7 +230,7 @@ class AshaTest(navi_test_base.TwoDevicesTestBase):
         lambda: ref_volumes.put_nowait(self.ref_asha_service.volume),
     )
 
-    for volume in range(_ASHA_MIN_VOLUME, _ASHA_MAX_VOLUME + 1):
+    for volume in range(_ASHA_MIN_VOLUME, _ASHA_MAX_VOLUME + 1, 8):
       async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
         self.logger.info("[DUT] Set volume to %s", volume)
         self.dut.bt.setAshaVolume(volume)

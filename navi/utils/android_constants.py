@@ -88,6 +88,8 @@ class Property(enum.StrEnum):
   # A2DP Source.
   A2DP_SOURCE_OPUS_ENABLED = "persist.bluetooth.opus.enabled"
   A2DP_CODEC_EXTENSIBILITY = "persist.vendor.audio.a2dp_codec_extensibility"
+  # SMP.
+  SMP_RSP_TIMEOUT_MS = "bluetooth.test.smp.rsp_timeout_ms.config"
 
 
 class Transport(enum.IntEnum):
@@ -1103,3 +1105,65 @@ class TakState(enum.IntEnum):
   ENCRYPTING = 1
   WAITING = 2
   ENCRYPTED = 3
+
+
+class LeAudioCodecType(enum.IntEnum):
+  """android.bluetooth.BluetoothLeAudioCodecConfig.SOURCE_CODEC_TYPE_*."""
+
+  LC3 = 0
+  OPUS = 1
+  OPUS_HI_RES = 2
+  INVALID = 1000 * 1000
+
+
+class LeAudioCodecPriority(enum.IntEnum):
+  """android.bluetooth.BluetoothLeAudioCodecConfig.CODEC_PRIORITY_*."""
+
+  DISABLED = -1
+  DEFAULT = 0
+  HIGHEST = 1000 * 1000
+
+
+class LeAudioSampleRate(enum.IntFlag):
+  """android.bluetooth.BluetoothLeAudioCodecConfig.SAMPLE_RATE_*."""
+
+  NONE = 0
+  RATE_8000 = 1 << 0
+  RATE_11025 = 1 << 1
+  RATE_16000 = 1 << 2
+  RATE_22050 = 1 << 3
+  RATE_24000 = 1 << 4
+  RATE_32000 = 1 << 5
+  RATE_44100 = 1 << 6
+  RATE_48000 = 1 << 7
+  RATE_88200 = 1 << 8
+  RATE_96000 = 1 << 9
+  RATE_176400 = 1 << 10
+  RATE_192000 = 1 << 11
+  RATE_384000 = 1 << 12
+
+
+class LeAudioBitsPerSample(enum.IntFlag):
+  """android.bluetooth.BluetoothLeAudioCodecConfig.BITS_PER_SAMPLE_*."""
+
+  NONE = 0
+  BITS_16 = 1 << 0
+  BITS_24 = 1 << 1
+  BITS_32 = 1 << 3
+
+
+class LeAudioChannelCount(enum.IntFlag):
+  """android.bluetooth.BluetoothLeAudioCodecConfig.CHANNEL_COUNT_*."""
+
+  NONE = 0
+  COUNT_1 = 1 << 0
+  COUNT_2 = 1 << 1
+
+
+class LeAudioFrameDuration(enum.IntFlag):
+  """android.bluetooth.BluetoothLeAudioCodecConfig.FRAME_DURATION_*."""
+
+  NONE = 0
+  DURATION_7500 = 1 << 0
+  DURATION_10000 = 1 << 1
+  DURATION_20000 = 1 << 2

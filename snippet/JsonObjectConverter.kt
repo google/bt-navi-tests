@@ -23,6 +23,8 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothHidDeviceAppSdpSettings
+import android.bluetooth.BluetoothLeAudioCodecConfig
+import android.bluetooth.BluetoothLeAudioCodecStatus
 import android.bluetooth.BluetoothQualityReport
 import android.bluetooth.BluetoothSocket
 import android.bluetooth.BluetoothSocketSettings
@@ -557,6 +559,39 @@ class JsonObjectConverter : SnippetObjectConverter {
       }
       .build()
 
+  private fun JSONObject.toBluetoothLeAudioCodecConfig(): BluetoothLeAudioCodecConfig =
+    BluetoothLeAudioCodecConfig.Builder()
+      .apply {
+        getOrNull<Int>(SnippetConstants.CODEC_TYPE)?.let {
+          val unused = setCodecType(it)
+        }
+        getOrNull<Int>(SnippetConstants.PRIORITY)?.let {
+          val unused = setCodecPriority(it)
+        }
+        getOrNull<Int>(SnippetConstants.SAMPLE_RATE)?.let {
+          val unused = setSampleRate(it)
+        }
+        getOrNull<Int>(SnippetConstants.BITS_PER_SAMPLE)?.let {
+          val unused = setBitsPerSample(it)
+        }
+        getOrNull<Int>(SnippetConstants.CHANNEL_COUNT)?.let {
+          val unused = setChannelCount(it)
+        }
+        getOrNull<Int>(SnippetConstants.FRAME_DURATION)?.let {
+          val unused = setFrameDuration(it)
+        }
+        getOrNull<Int>(SnippetConstants.OCTETS_PER_FRAME)?.let {
+          val unused = setOctetsPerFrame(it)
+        }
+        getOrNull<Int>(SnippetConstants.MIN_OCTETS_PER_FRAME)?.let {
+          val unused = setMinOctetsPerFrame(it)
+        }
+        getOrNull<Int>(SnippetConstants.MAX_OCTETS_PER_FRAME)?.let {
+          val unused = setMaxOctetsPerFrame(it)
+        }
+      }
+      .build()
+
   /**
    * Serializes JVM object [parameter] to a [JSONObject], or returns null if there is no viable
    * conversion.
@@ -587,6 +622,12 @@ class JsonObjectConverter : SnippetObjectConverter {
       return parameter.toJson()
     }
     if (parameter is BluetoothCodecConfig) {
+      return parameter.toJson()
+    }
+    if (parameter is BluetoothLeAudioCodecConfig) {
+      return parameter.toJson()
+    }
+    if (parameter is BluetoothLeAudioCodecStatus) {
       return parameter.toJson()
     }
     if (Build.VERSION.SDK_INT >= 35) {
@@ -651,6 +692,9 @@ class JsonObjectConverter : SnippetObjectConverter {
     if (type === BluetoothCodecConfig::class.java) {
       return jsonObject?.toBluetoothCodecConfig()
     }
+    if (type === BluetoothLeAudioCodecConfig::class.java) {
+      return jsonObject?.toBluetoothLeAudioCodecConfig()
+    }
     if (Build.VERSION.SDK_INT >= 35 && type === BluetoothCodecType::class.java) {
       return jsonObject?.toBluetoothCodecType()
     }
@@ -700,6 +744,41 @@ class JsonObjectConverter : SnippetObjectConverter {
         put(SnippetConstants.CODEC_SPECIFIC_2, this@toJson.codecSpecific2)
         put(SnippetConstants.CODEC_SPECIFIC_3, this@toJson.codecSpecific3)
         put(SnippetConstants.CODEC_SPECIFIC_4, this@toJson.codecSpecific4)
+      }
+
+    private fun BluetoothLeAudioCodecConfig.toJson(): JSONObject =
+      JSONObject().apply {
+        put(SnippetConstants.CODEC_TYPE, this@toJson.codecType)
+        put(SnippetConstants.PRIORITY, this@toJson.codecPriority)
+        put(SnippetConstants.SAMPLE_RATE, this@toJson.sampleRate)
+        put(SnippetConstants.BITS_PER_SAMPLE, this@toJson.bitsPerSample)
+        put(SnippetConstants.CHANNEL_COUNT, this@toJson.channelCount)
+        put(SnippetConstants.FRAME_DURATION, this@toJson.frameDuration)
+        put(SnippetConstants.OCTETS_PER_FRAME, this@toJson.octetsPerFrame)
+        put(SnippetConstants.MIN_OCTETS_PER_FRAME, this@toJson.minOctetsPerFrame)
+        put(SnippetConstants.MAX_OCTETS_PER_FRAME, this@toJson.maxOctetsPerFrame)
+      }
+
+    private fun BluetoothLeAudioCodecStatus.toJson(): JSONObject =
+      JSONObject().apply {
+        put(SnippetConstants.INPUT_CODEC_CONFIG, this@toJson.inputCodecConfig?.toJson())
+        put(SnippetConstants.OUTPUT_CODEC_CONFIG, this@toJson.outputCodecConfig?.toJson())
+        put(
+          SnippetConstants.INPUT_CODECS_LOCAL_CAPABILITIES,
+          JSONArray(this@toJson.inputCodecLocalCapabilities.map { it.toJson() }),
+        )
+        put(
+          SnippetConstants.OUTPUT_CODECS_LOCAL_CAPABILITIES,
+          JSONArray(this@toJson.outputCodecLocalCapabilities.map { it.toJson() }),
+        )
+        put(
+          SnippetConstants.INPUT_CODECS_SELECTABLE_CAPABILITIES,
+          JSONArray(this@toJson.inputCodecSelectableCapabilities.map { it.toJson() }),
+        )
+        put(
+          SnippetConstants.OUTPUT_CODECS_SELECTABLE_CAPABILITIES,
+          JSONArray(this@toJson.outputCodecSelectableCapabilities.map { it.toJson() }),
+        )
       }
   }
 }

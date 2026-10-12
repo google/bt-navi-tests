@@ -757,6 +757,136 @@ class A2dpCodecConfigChanged(JsonDeserializableEvent):
 
 
 @dataclasses.dataclass
+class LeAudioCodecConfig(JsonDeserializable):
+  """android.bluetooth.BluetoothLeAudioCodecConfig."""
+
+  codec_type: android_constants.LeAudioCodecType | None = dataclasses.field(
+      default=None,
+      metadata={
+          _FIELD: snippet_constants.CODEC_TYPE,
+          _MAPPER: android_constants.LeAudioCodecType,
+      },
+  )
+  priority: android_constants.LeAudioCodecPriority | None = dataclasses.field(
+      default=None,
+      metadata={
+          _FIELD: snippet_constants.PRIORITY,
+          _MAPPER: android_constants.LeAudioCodecPriority,
+      },
+  )
+  sample_rate: android_constants.LeAudioSampleRate | None = dataclasses.field(
+      default=None,
+      metadata={
+          _FIELD: snippet_constants.SAMPLE_RATE,
+          _MAPPER: android_constants.LeAudioSampleRate,
+      },
+  )
+  bits_per_sample: android_constants.LeAudioBitsPerSample | None = (
+      dataclasses.field(
+          default=None,
+          metadata={
+              _FIELD: snippet_constants.BITS_PER_SAMPLE,
+              _MAPPER: android_constants.LeAudioBitsPerSample,
+          },
+      )
+  )
+  channel_count: android_constants.LeAudioChannelCount | None = (
+      dataclasses.field(
+          default=None,
+          metadata={
+              _FIELD: snippet_constants.CHANNEL_COUNT,
+              _MAPPER: android_constants.LeAudioChannelCount,
+          },
+      )
+  )
+  frame_duration: android_constants.LeAudioFrameDuration | None = (
+      dataclasses.field(
+          default=None,
+          metadata={
+              _FIELD: snippet_constants.FRAME_DURATION,
+              _MAPPER: android_constants.LeAudioFrameDuration,
+          },
+      )
+  )
+  octets_per_frame: int | None = dataclasses.field(
+      default=None,
+      metadata={_FIELD: snippet_constants.OCTETS_PER_FRAME},
+  )
+  min_octets_per_frame: int | None = dataclasses.field(
+      default=None,
+      metadata={_FIELD: snippet_constants.MIN_OCTETS_PER_FRAME},
+  )
+  max_octets_per_frame: int | None = dataclasses.field(
+      default=None,
+      metadata={_FIELD: snippet_constants.MAX_OCTETS_PER_FRAME},
+  )
+
+
+@dataclasses.dataclass
+class LeAudioCodecStatus(JsonDeserializable):
+  """android.bluetooth.BluetoothLeAudioCodecStatus."""
+
+  input_codec_config: LeAudioCodecConfig | None = dataclasses.field(
+      default=None,
+      metadata={
+          _FIELD: snippet_constants.INPUT_CODEC_CONFIG,
+          _MAPPER: LeAudioCodecConfig.from_mapping,
+      },
+  )
+  output_codec_config: LeAudioCodecConfig | None = dataclasses.field(
+      default=None,
+      metadata={
+          _FIELD: snippet_constants.OUTPUT_CODEC_CONFIG,
+          _MAPPER: LeAudioCodecConfig.from_mapping,
+      },
+  )
+  input_codecs_local_capabilities: Sequence[LeAudioCodecConfig] = (
+      dataclasses.field(
+          default=(),
+          metadata={
+              _FIELD: snippet_constants.INPUT_CODECS_LOCAL_CAPABILITIES,
+              _MAPPER: lambda x: [
+                  LeAudioCodecConfig.from_mapping(c) for c in x
+              ],
+          },
+      )
+  )
+  output_codecs_local_capabilities: Sequence[LeAudioCodecConfig] = (
+      dataclasses.field(
+          default=(),
+          metadata={
+              _FIELD: snippet_constants.OUTPUT_CODECS_LOCAL_CAPABILITIES,
+              _MAPPER: lambda x: [
+                  LeAudioCodecConfig.from_mapping(c) for c in x
+              ],
+          },
+      )
+  )
+  input_codecs_selectable_capabilities: Sequence[LeAudioCodecConfig] = (
+      dataclasses.field(
+          default=(),
+          metadata={
+              _FIELD: snippet_constants.INPUT_CODECS_SELECTABLE_CAPABILITIES,
+              _MAPPER: lambda x: [
+                  LeAudioCodecConfig.from_mapping(c) for c in x
+              ],
+          },
+      )
+  )
+  output_codecs_selectable_capabilities: Sequence[LeAudioCodecConfig] = (
+      dataclasses.field(
+          default=(),
+          metadata={
+              _FIELD: snippet_constants.OUTPUT_CODECS_SELECTABLE_CAPABILITIES,
+              _MAPPER: lambda x: [
+                  LeAudioCodecConfig.from_mapping(c) for c in x
+              ],
+          },
+      )
+  )
+
+
+@dataclasses.dataclass
 class AdapterStateChanged(JsonDeserializableEvent):
   """android.bluetooth.adapter.action.STATE_CHANGED.
 
@@ -3754,6 +3884,7 @@ class TakSession(CallbackHandler):
       address: str,
       key: list[int],
       uuid: str,
+      address_type: int | None = None,
   ) -> Self:
     """Start a TAK session.
 
@@ -3762,11 +3893,15 @@ class TakSession(CallbackHandler):
       address: The MAC address of the remote device.
       key: The TAK key (list of 16 ints).
       uuid: The TAK UUID string.
+      address_type: Address type of the remote device.
 
     Returns:
       The TAK session.
     """
-    handler = snippet.startTakSession(address, key, uuid)
+    if address_type is not None:
+      handler = snippet.startTakSession(address, key, uuid, address_type)
+    else:
+      handler = snippet.startTakSession(address, key, uuid)
     return cls(snippet=snippet, handler=handler)
 
   @override
@@ -3813,11 +3948,12 @@ class SnippetWrapper:
       address: str,
       key: bytes | list[int],
       uuid: str,
+      address_type: int | None = None,
   ) -> TakSession:
     """Starts a TAK session."""
     if isinstance(key, bytes):
       key = list(key)
-    return TakSession.create(self.snippet, address, key, uuid)
+    return TakSession.create(self.snippet, address, key, uuid, address_type)
 
   def start_scanning(
       self,
@@ -4318,3 +4454,34 @@ class SnippetWrapper:
         BluetoothCodecType.from_mapping(codec_type)
         for codec_type in self.snippet.getA2dpSupportedCodecTypes()
     ]
+
+  def get_le_audio_codec_status(
+      self, group_id: int
+  ) -> LeAudioCodecStatus | None:
+    """Gets the LE Audio codec status for a group."""
+    if status := self.snippet.getLeAudioCodecStatus(group_id):
+      return LeAudioCodecStatus.from_mapping(status)
+    return None
+
+  def set_le_audio_codec_config_preference(
+      self,
+      group_id: int,
+      input_codec_config: LeAudioCodecConfig | None = None,
+      output_codec_config: LeAudioCodecConfig | None = None,
+  ) -> None:
+    """Sets the LE Audio codec config preference for a group."""
+    if input_codec_config is None:
+      input_codec_config = LeAudioCodecConfig(
+          codec_type=(
+              output_codec_config.codec_type if output_codec_config else None
+          )
+      )
+    if output_codec_config is None:
+      output_codec_config = LeAudioCodecConfig(
+          codec_type=input_codec_config.codec_type
+      )
+    return self.snippet.setLeAudioCodecConfigPreference(
+        group_id,
+        _make_json_object(input_codec_config),
+        _make_json_object(output_codec_config),
+    )

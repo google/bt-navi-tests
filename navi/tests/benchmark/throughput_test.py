@@ -13,6 +13,7 @@
 #  limitations under the License.
 
 import asyncio
+import contextlib
 import logging
 import statistics
 from unittest import mock
@@ -417,11 +418,6 @@ class ThroughputTest(navi_test_base.TwoDevicesTestBase):
   async def test_rfcomm(self) -> None:
     """Tests RFCOMM throughput."""
     total_bytes = 4 * 1024 * 1024  # 4 MB
-    ref_sdu_rx_queue = asyncio.Queue[bytes]()
-    async def ref_rx_task():
-      bytes_received = 0
-      while bytes_received < total_bytes:
-        bytes_received += len(await ref_sdu_rx_queue.get())
     tx_throughput_list = list[float]()
     rx_throughput_list = list[float]()
 
@@ -440,7 +436,16 @@ class ThroughputTest(navi_test_base.TwoDevicesTestBase):
         )
     )
 
+    async def ref_rx_task(rx_queue: asyncio.Queue[bytes]) -> None:
+      bytes_received = 0
+      while bytes_received < total_bytes:
+        bytes_received += len(await rx_queue.get())
+
     for _ in range(_DEFAULT_REPEAT_TIMES):
+      dut_ref_dlc: bl4a_api.RfcommSocket | None = None
+      ref_dut_dlc: rfcomm.DLC | None = None
+      ref_sdu_rx_queue = asyncio.Queue[bytes]()
+
       try:
         ref_accept_future: asyncio.Future[rfcomm.DLC] = (
             asyncio.get_running_loop().create_future()
@@ -465,7 +470,7 @@ class ThroughputTest(navi_test_base.TwoDevicesTestBase):
           async with self.assert_not_timeout(_TRANSMISSION_TIMEOUT_SECONDS):
             await asyncio.gather(
                 dut_ref_dlc.write(bytes(total_bytes)),
-                ref_rx_task(),
+                ref_rx_task(ref_sdu_rx_queue),
             )
 
         self.logger.info("Start sending data from REF to DUT")
@@ -489,7 +494,14 @@ class ThroughputTest(navi_test_base.TwoDevicesTestBase):
         self.logger.exception("Failed to send data")
 
       finally:
+        if ref_dut_dlc is not None:
+          with contextlib.suppress(Exception):
+            async with asyncio.timeout(3.0):
+              await ref_dut_dlc.disconnect()
         await performance_tool.terminate_connection_from_ref(self.dut, self.ref)
+        if dut_ref_dlc is not None:
+          with contextlib.suppress(Exception):
+            await dut_ref_dlc.close()
 
     self.record_data(
         navi_test_base.RecordData(

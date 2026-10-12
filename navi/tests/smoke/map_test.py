@@ -61,6 +61,7 @@ class _SmsMessage:
 _DEFAULT_TIMEOUT_SECONDS = 30.0
 _MAX_OBEX_PACKET_LENGTH = 8192
 _PROPERTY_MAP_SERVER_ENABLED = "bluetooth.profile.map.server.enabled"
+_MESSAGE_STATUS = b"x-bt/messageStatus\0"
 _MMSSMS_DB_PATH = (
     "/data/data/com.android.providers.telephony/databases/mmssms.db"
 )
@@ -430,6 +431,151 @@ class MapTest(navi_test_base.TwoDevicesTestBase):
     self.assertEqual(event.attrib["type"], "NewMessage")
     self.assertEqual(event.attrib["sender_name"], new_message.address)
     self.assertIn("handle", event.attrib)
+
+  async def test_read_sms_message_from_carkit(self) -> None:
+    """Tests receiving SMS notification on car-kit and updating read status.
+
+    Test steps:
+      1. Configure REF as a Car Kit device and set up MNS server SDP record.
+      2. Establish MAS connection from REF to DUT.
+      3. Register for MNS event notifications on DUT and wait for MNS session.
+      4. Simulate an incoming SMS with symbols and emojis on DUT.
+      5. Verify REF receives the NewMessage notification and extracts handle.
+      6. Send OBEX PUT with type 'x-bt/messageStatus' to mark message as READ.
+      7. Verify bMessage retrieved via OBEX GET reflects 'STATUS:READ'.
+    """
+    self.logger.info(
+        "[REF] Configure Car Kit Class of Device and start MNS server."
+    )
+    self.ref.config.class_of_device = 0x200408  # Car Kit (Handsfree / Audio)
+    mns_server = message_access.MnsServer(self.ref.device)
+    self.ref.device.sdp_service_records = {
+        1: (
+            message_access.MnsSdpInfo(
+                service_record_handle=1,
+                rfcomm_channel=mns_server.rfcomm_channel,
+                version=message_access.Version.V_1_4,
+                supported_features=(
+                    message_access.ApplicationParameterValue.SupportedFeatures(
+                        0xFF
+                    )
+                ),
+            ).to_sdp_records()
+        ),
+    }
+
+    self.logger.info("[REF] Connect MAS client to DUT over RFCOMM.")
+    client, connection_id = await self._make_connected_mas_client_from_ref(
+        _BearerType.RFCOMM
+    )
+
+    self.logger.info("[REF] Register for MNS event notifications on DUT.")
+    request = obex.Request(
+        opcode=obex.Opcode.PUT,
+        final=True,
+        headers=obex.Headers(
+            type=message_access.ObexHeaderType.NOTIFICATION_REGISTRATION.value,
+            connection_id=connection_id,
+            app_parameters=message_access.ApplicationParameters(
+                notification_status=1
+            ).to_bytes(),
+            end_of_body=b"\0",
+        ),
+    )
+    async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
+      response = await client.send_request(request)
+    self.assertEqual(response.response_code, obex.ResponseCode.SUCCESS)
+
+    self.logger.info("[REF] Wait for MNS session connection from DUT.")
+    async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
+      session = await mns_server.sessions.get()
+      await session.connected.wait()
+
+    await asyncio.sleep(0.5)
+
+    self.logger.info(
+        "[DUT] Inject incoming SMS into telephony provider to simulate message"
+        " arrival."
+    )
+    new_message = _SmsMessage(
+        thread_id=1,
+        date=int(self.dut.shell("date +%s")) * 1000,
+        address="1234567890",
+        body="A short message with symbols: !@#$%^&*()_+ and emojis: 😊🚀",
+    )
+    self._add_sms_message(new_message, android_constants.SmsMessageType.INBOX)
+    self.logger.info("[DUT] Notify Bluetooth MAP service of new incoming SMS.")
+    self.dut.bt.notifyMmsSmsChange()
+
+    self.logger.info("[REF] Wait for NewMessage notification event via MNS.")
+    async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
+      notification = await session.notifications.get()
+    if (event := ET.fromstring(notification).find("event")) is None:
+      self.fail("Failed to find event in message notification.")
+    self.assertEqual(event.attrib["type"], "NewMessage")
+    handle = event.attrib.get("handle")
+    self.assertIsNotNone(handle, "NewMessage event missing handle attribute.")
+
+    self.logger.info(
+        "[REF] Set message status to READ via SetMessageStatus PUT (handle:"
+        " %s).",
+        handle,
+    )
+    set_status_request = obex.Request(
+        opcode=obex.Opcode.PUT,
+        final=True,
+        headers=obex.Headers(
+            name=handle,
+            type=_MESSAGE_STATUS,
+            connection_id=connection_id,
+            app_parameters=message_access.ApplicationParameters(
+                status_indicator=0,
+                status_value=1,
+            ).to_bytes(),
+            end_of_body=b"\0",
+        ),
+    )
+    async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
+      set_status_response = await client.send_request(set_status_request)
+    self.assertEqual(
+        set_status_response.response_code, obex.ResponseCode.SUCCESS
+    )
+
+    self.logger.info(
+        "[REF] Fetch bMessage to verify updated READ status (handle: %s).",
+        handle,
+    )
+    get_message_request = obex.Request(
+        opcode=obex.Opcode.GET,
+        final=True,
+        headers=obex.Headers(
+            name=handle,
+            type=message_access.ObexHeaderType.MESSAGE.value,
+            connection_id=connection_id,
+            app_parameters=message_access.ApplicationParameters(
+                charset=_AppParamValue.Charset.UTF_8,
+                attachment=0,
+            ).to_bytes(),
+        ),
+    )
+    async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
+      get_message_response = await client.send_request(get_message_request)
+    self.assertEqual(
+        get_message_response.response_code, obex.ResponseCode.SUCCESS
+    )
+    body = (
+        get_message_response.headers.body
+        or get_message_response.headers.end_of_body
+        or b""
+    )
+    lines = body.decode("utf-8", errors="replace").splitlines()
+    status_line = next(
+        (line for line in lines if line.startswith("STATUS:")), None
+    )
+    self.assertIsNotNone(
+        status_line, f"STATUS line not found in bMessage: {body!r}"
+    )
+    self.assertEqual(status_line.split(":", 1)[1], "READ")
 
 
 if __name__ == "__main__":

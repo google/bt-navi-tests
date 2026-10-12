@@ -24,11 +24,15 @@ from bumble import device
 from bumble import gatt
 from bumble import hci
 from bumble import keys
+from bumble import pairing
+from bumble import smp
 from mobly import test_runner
+from mobly import signals
 
 from navi.tests import navi_test_base
 from navi.utils import android_constants
 from navi.utils import bl4a_api
+from navi.utils import errors
 from navi.utils import pyee_extensions
 from navi.utils import retry
 
@@ -39,6 +43,7 @@ _MIN_ADVERTISING_INTERVAL_MS = 20
 _DISCOVERY_TIMEOUT_SECONDS = 12.0
 _TAK_KEY = bytes([0x12] * 16)
 _TAK_SERVICE_UUID = "01234567-89ab-cdef-0123-456789abcdef"
+_PAIRING_SUPPRESSION_TIMEOUT_SECONDS = 2.0
 
 _OwnAddressType = hci.OwnAddressType
 _AdvertisingData = core.AdvertisingData
@@ -681,11 +686,12 @@ class LeHostTest(navi_test_base.TwoDevicesTestBase):
       4. Request subrate mode on DUT.
       5. Check that the subrate mode is updated on REF.
     """
-    # TODO: Re-enable this when subrate manager is ready.
-    if not self.dut.device.is_emulator:
-      self.skipTest("Not stable on real device.")
+    if (
+        not self.dut.device.is_emulator
+        and self.dut.bluetooth_mainline_version < 361600000
+    ):
+      self.skipTest("Subrate manager is not available before 2026-04 release.")
 
-    # TODO: Check if DUT supports LE subrating.
     if not self.ref.device.supports_le_features(
         hci.LeFeatureMask.CONNECTION_SUBRATING
     ):
@@ -1180,14 +1186,14 @@ class LeHostTest(navi_test_base.TwoDevicesTestBase):
       )
 
   def _require_tak_support(self) -> None:
-    """Verifies that DUT supports TAK (requires SDK 37.1 / 26Q4)."""
-    # TAK requires SDK 37.1 (26Q4 /  CINNAMON_BUN_1 = 3700001)
-    if self.dut.bt.getFullSdkVersion() < 3700001:
+    """Verifies that DUT supports TAK (requires SDK 37.2 / 26Q4)."""
+    # TAK requires SDK 37.2 (26Q4 /  CINNAMON_BUN_2 = 3700002)
+    if self.dut.bt.getFullSdkVersion() < 3700002:
       self.skipTest("DUT does not support this feature in this SDK version.")
 
   async def _establish_le_acl_connection(
       self, is_ref_central: bool
-  ) -> device.Connection:
+  ) -> tuple[device.Connection, bl4a_api.GattClient | None]:
     """Establishes an LE ACL connection between DUT and REF.
 
     Args:
@@ -1195,14 +1201,16 @@ class LeHostTest(navi_test_base.TwoDevicesTestBase):
         DUT is Central and REF is Peripheral.
 
     Returns:
-      The Bumble Connection instance on REF.
+      A tuple of (ref_connection, gatt_client) where gatt_client is provided
+      when DUT is Central.
     """
     if is_ref_central:
-      return await self.connect_le_from_ref(
-          dut_address_type=android_constants.AddressTypeStatus.PUBLIC,
+      ref_connection = await self.connect_le_from_ref(
+          dut_address_type=android_constants.AddressTypeStatus.RANDOM,
           ref_address_type=hci.OwnAddressType.RANDOM,
           timeout=_DEFAULT_TIMEOUT_SECONDS,
       )
+      return ref_connection, None
     else:
       with self.dut.bl4a.register_callback(
           bl4a_api.Module.ADAPTER
@@ -1237,7 +1245,7 @@ class LeHostTest(navi_test_base.TwoDevicesTestBase):
         ref_connection = le_connections[-1]
 
         await self.ref.device.stop_advertising()
-        return ref_connection
+        return ref_connection, gatt_client
 
   async def _start_tak_session_and_wait(
       self,
@@ -1260,7 +1268,10 @@ class LeHostTest(navi_test_base.TwoDevicesTestBase):
     self.logger.info("Calling startTakSession on DUT (%s)", role_name)
     tak_session = self.test_case_context.enter_context(
         self.dut.bl4a.start_tak_session(
-            self.ref.random_address, key, service_uuid
+            self.ref.random_address,
+            key,
+            service_uuid,
+            address_type=android_constants.AddressTypeStatus.RANDOM,
         )
     )
     expected_state = (
@@ -1268,6 +1279,8 @@ class LeHostTest(navi_test_base.TwoDevicesTestBase):
         if is_ref_central
         else android_constants.TakState.ENCRYPTING
     )
+    self.logger.info("Waiting for TAK state transition to %r", expected_state)
+
     await tak_session.wait_for_event(
         event=bl4a_api.TakStateChanged(
             device=self.ref.random_address,
@@ -1275,6 +1288,9 @@ class LeHostTest(navi_test_base.TwoDevicesTestBase):
             uuid=service_uuid,
             status=android_constants.BluetoothStatusCode.SUCCESS,
         )
+    )
+    self.logger.info(
+        "TAK state successfully transitioned to %r", expected_state
     )
     return tak_session
 
@@ -1291,7 +1307,7 @@ class LeHostTest(navi_test_base.TwoDevicesTestBase):
     """
     self._require_tak_support()
 
-    ref_connection = await self._establish_le_acl_connection(is_ref_central)
+    ref_connection, _ = await self._establish_le_acl_connection(is_ref_central)
 
     # Unconditionally inject TAK as LTK to keystore so we can use
     # ref_connection.encrypt()
@@ -1310,17 +1326,20 @@ class LeHostTest(navi_test_base.TwoDevicesTestBase):
         pairing_keys,
     )
 
+    self.logger.info("[DUT] Start TAK session.")
     tak_session = await self._start_tak_session_and_wait(
         _TAK_KEY, _TAK_SERVICE_UUID, is_ref_central
     )
     if is_ref_central:
       # Let Bumble handle the LL command and encryption events via its
       # keystore
+      self.logger.info("[REF] Encrypt connection.")
       async with self.assert_not_timeout(
           _DEFAULT_TIMEOUT_SECONDS, msg="Wait for REF encryption_change"
       ):
         await ref_connection.encrypt()
 
+    self.logger.info("[DUT] Wait for TAK session to reach ENCRYPTED state.")
     await tak_session.wait_for_event(
         event=bl4a_api.TakStateChanged(
             device=self.ref.random_address,
@@ -1374,7 +1393,7 @@ class LeHostTest(navi_test_base.TwoDevicesTestBase):
           " yet."
       )
 
-    ref_connection = await self._establish_le_acl_connection(is_ref_central)
+    ref_connection, _ = await self._establish_le_acl_connection(is_ref_central)
 
     # Mismatched TAK keys: DUT uses Key A (0x11), REF uses Key B (0x22)
     dut_tak_key = bytes([0x11] * 16)
@@ -1418,6 +1437,571 @@ class LeHostTest(navi_test_base.TwoDevicesTestBase):
         "DUT successfully received ERROR_TAK_ENCRYPTION_FAILED for key"
         " mismatch."
     )
+
+  @navi_test_base.named_parameterized(
+      ("outgoing", False),
+      ("incoming", True),
+  )
+  async def test_tak_local_gatt_escalation(
+      self, is_ref_central: bool
+  ) -> None:
+    """Verify that a local GATT read requiring authentication suppresses SMP pairing when TAK is encrypted."""
+    self._require_tak_support()
+
+    characteristic_uuid = "0000fff1-0000-1000-8000-00805f9b34fb"
+    self.logger.info(
+        "[REF] Add GATT service with authentication-protected characteristic."
+    )
+    self.ref.device.add_service(
+        gatt.Service(
+            uuid=_TAK_SERVICE_UUID,
+            characteristics=[
+                gatt.Characteristic(
+                    uuid=characteristic_uuid,
+                    properties=gatt.Characteristic.Properties.READ,
+                    permissions=gatt.Characteristic.Permissions.READ_REQUIRES_AUTHENTICATION,
+                    value=b"tak_auth_test",
+                )
+            ],
+        )
+    )
+
+    ref_connection, gatt_client = await self._establish_le_acl_connection(
+        is_ref_central
+    )
+    if gatt_client is None:
+      self.logger.info("[DUT] Connect GATT client to REF.")
+      gatt_client = await self.dut.bl4a.connect_gatt_client(
+          address=self.ref.random_address,
+          address_type=android_constants.AddressTypeStatus.RANDOM,
+          transport=android_constants.Transport.LE,
+      )
+      self.test_case_context.push(gatt_client)
+
+    # Configure REF keystore with TAK key
+    pairing_keys = keys.PairingKeys()
+    pairing_keys.ltk = keys.PairingKeys.Key(
+        value=_TAK_KEY,
+        authenticated=False,
+        rand=b"\x00" * 8,
+        ediv=0,
+    )
+    if self.ref.device.keystore is None:
+      self.ref.device.keystore = keys.MemoryKeyStore()
+
+    await self.ref.device.update_keys(
+        str(ref_connection.peer_address),
+        pairing_keys,
+    )
+
+    self.logger.info("[DUT] Start TAK session.")
+    tak_session = await self._start_tak_session_and_wait(
+        _TAK_KEY, _TAK_SERVICE_UUID, is_ref_central
+    )
+    if is_ref_central:
+      self.logger.info("[REF] Encrypt connection.")
+      async with self.assert_not_timeout(
+          _DEFAULT_TIMEOUT_SECONDS, msg="Wait for REF encryption_change"
+      ):
+        await ref_connection.encrypt()
+
+    with pyee_extensions.EventWatcher() as watcher:
+      ref_encryption_changed = watcher.async_monitor(
+          ref_connection, ref_connection.EVENT_CONNECTION_ENCRYPTION_CHANGE
+      )
+
+      self.logger.info("[DUT] Wait for TAK session to reach ENCRYPTED state.")
+      await tak_session.wait_for_event(
+          event=bl4a_api.TakStateChanged(
+              device=self.ref.random_address,
+              state=android_constants.TakState.ENCRYPTED,
+              uuid=_TAK_SERVICE_UUID,
+              status=android_constants.BluetoothStatusCode.SUCCESS,
+          )
+      )
+
+      if not ref_connection.is_encrypted:
+        self.logger.info("[REF] Wait for encryption change.")
+        async with self.assert_not_timeout(
+            _DEFAULT_TIMEOUT_SECONDS, msg="Wait for REF encryption_change"
+        ):
+          await ref_encryption_changed.get()
+
+    # TAK is unauthenticated encryption (Level 2). Ensure Bumble treats
+    # the connection as unauthenticated so GATT requires authentication fails.
+    ref_connection.authenticated = False
+    self.logger.info("DUT successfully reached ENCRYPTED state.")
+
+    self.logger.info("[DUT] Discover services.")
+    services = await gatt_client.discover_services()
+    characteristic = bl4a_api.find_characteristic_by_uuid(
+        characteristic_uuid, services
+    )
+    if not characteristic.handle:
+      self.fail("Cannot find characteristic handle.")
+
+    with self.dut.bl4a.register_callback(
+        bl4a_api.Module.ADAPTER
+    ) as adapter_cb:
+      self.logger.info(
+          "[DUT] Read characteristic requiring authentication."
+      )
+      with self.assertRaises(signals.TestFailure):
+        await gatt_client.read_characteristic(characteristic.handle)
+
+      # [Check]: No auto pairing triggered
+      self.logger.info(
+          "[DUT] Verify no pairing request is triggered on TAK link."
+      )
+      with self.assertRaises(errors.AsyncTimeoutError):
+        await adapter_cb.wait_for_event(
+            bl4a_api.PairingRequest,
+            timeout=_PAIRING_SUPPRESSION_TIMEOUT_SECONDS,
+        )
+      self.assertEmpty(
+          adapter_cb.get_all_events(bl4a_api.PairingRequest),
+          "PairingRequest was unexpectedly received.",
+      )
+    self.logger.info(
+        "Verified GATT authentication escalation suppression under TAK."
+    )
+
+  @navi_test_base.named_parameterized(
+      ("central", False),
+      ("peripheral", True),
+  )
+  async def test_tak_reject_remote_smp(self, is_ref_central: bool) -> None:
+    """Verify that the local device rejects an incoming SMP request on an active TAK link.
+
+    Args:
+      is_ref_central: If True, REF is Central and DUT is Peripheral (rejects
+        incoming SMP Pairing Request). If False, DUT is Central and REF is
+        Peripheral (rejects incoming SMP Security Request).
+    """
+    self._require_tak_support()
+
+    ref_connection, gatt_client = await self._establish_le_acl_connection(
+        is_ref_central
+    )
+    if gatt_client is None:
+      self.logger.info("[DUT] Connect GATT client to REF.")
+      gatt_client = await self.dut.bl4a.connect_gatt_client(
+          address=self.ref.random_address,
+          address_type=android_constants.AddressTypeStatus.RANDOM,
+          transport=android_constants.Transport.LE,
+      )
+      self.test_case_context.push(gatt_client)
+
+    self.logger.info("[DUT] Wait for GATT service discovery to complete.")
+    await gatt_client.discover_services()
+
+    # Configure REF keystore with TAK key
+    pairing_keys = keys.PairingKeys()
+    pairing_keys.ltk = keys.PairingKeys.Key(
+        value=_TAK_KEY,
+        authenticated=False,
+        rand=b"\x00" * 8,
+        ediv=0,
+    )
+    if self.ref.device.keystore is None:
+      self.ref.device.keystore = keys.MemoryKeyStore()
+
+    await self.ref.device.update_keys(
+        str(ref_connection.peer_address),
+        pairing_keys,
+    )
+
+    self.logger.info("[DUT] Start TAK session.")
+    tak_session = await self._start_tak_session_and_wait(
+        _TAK_KEY, _TAK_SERVICE_UUID, is_ref_central
+    )
+    if is_ref_central:
+      self.logger.info("[REF] Encrypt connection.")
+      async with self.assert_not_timeout(
+          _DEFAULT_TIMEOUT_SECONDS, msg="Wait for REF encryption_change"
+      ):
+        await ref_connection.encrypt()
+
+    self.logger.info("[DUT] Wait for TAK session to reach ENCRYPTED state.")
+    await tak_session.wait_for_event(
+        event=bl4a_api.TakStateChanged(
+            device=self.ref.random_address,
+            state=android_constants.TakState.ENCRYPTED,
+            uuid=_TAK_SERVICE_UUID,
+            status=android_constants.BluetoothStatusCode.SUCCESS,
+        )
+    )
+    self.logger.info("DUT successfully reached ENCRYPTED state.")
+
+    with self.dut.bl4a.register_callback(bl4a_api.Module.ADAPTER) as adapter_cb:
+      if is_ref_central:
+        self.logger.info(
+            "[REF] Remote Central sends SMP Pairing Request on TAK encrypted"
+            " link."
+        )
+        with self.assertRaises(core.ProtocolError):
+          await ref_connection.pair()
+        self.assertIsNotNone(
+            self.ref.device.lookup_connection(ref_connection.handle),
+            "Link was disconnected.",
+        )
+      else:
+        self.logger.info(
+            "[REF] Remote Peripheral sends SMP Security Request PDU."
+        )
+        self.ref.device.smp_manager.send_command(
+            ref_connection,
+            smp.SMP_Security_Request_Command(
+                auth_req=smp.AuthReq.from_booleans(bonding=True, sc=True)
+            ),
+        )
+
+      self.logger.info(
+          "[DUT] Verify local stack rejects request and suppresses pairing."
+      )
+      with self.assertRaises(errors.AsyncTimeoutError):
+        await adapter_cb.wait_for_event(
+            bl4a_api.PairingRequest,
+            timeout=_PAIRING_SUPPRESSION_TIMEOUT_SECONDS,
+        )
+      self.assertEmpty(
+          adapter_cb.get_all_events(bl4a_api.PairingRequest),
+          "PairingRequest was unexpectedly received.",
+      )
+
+    self.logger.info("[DUT] Verify TAK encrypted link remains intact.")
+    self.assertIsNotNone(
+        self.ref.device.lookup_connection(ref_connection.handle),
+        "Link was disconnected.",
+    )
+    self.assertTrue(bool(ref_connection.encryption), "Link lost encryption.")
+
+  async def test_tak_remote_smp_collision_setup(self) -> None:
+    """Verify that an incoming SMP request aborts an in-progress TAK setup."""
+    self._require_tak_support()
+
+    ref_connection, _ = await self._establish_le_acl_connection(
+        is_ref_central=True
+    )
+    ref_addr = str(self.ref.random_address)
+
+    self.ref.device.pairing_config_factory = lambda _: pairing.PairingConfig(
+        identity_address_type=pairing.PairingConfig.AddressType.RANDOM,
+        delegate=pairing.PairingDelegate(
+            io_capability=pairing.PairingDelegate.IoCapability.DISPLAY_OUTPUT_AND_YES_NO_INPUT
+        ),
+    )
+
+    with self.dut.bl4a.register_callback(bl4a_api.Module.ADAPTER) as adapter_cb:
+      self.logger.info("[DUT] Start TAK session (Local=Peripheral).")
+      tak_session = await self._start_tak_session_and_wait(
+          _TAK_KEY, _TAK_SERVICE_UUID, is_ref_central=True
+      )
+
+      self.logger.info("[REF] Remote Central sends SMP Pairing Request PDU.")
+      pair_task = asyncio.create_task(ref_connection.pair())
+
+      self.logger.info(
+          "[DUT] Verify TAK session is aborted due to SMP collision."
+      )
+      await tak_session.wait_for_event(
+          event=bl4a_api.TakStateChanged(
+              device=self.ref.random_address,
+              state=android_constants.TakState.NONE,
+              uuid=_TAK_SERVICE_UUID,
+              status=android_constants.BluetoothStatusCode.ERROR_TAK_ENCRYPTION_FAILED,
+          ),
+          timeout=_DEFAULT_TIMEOUT_SECONDS,
+      )
+
+      self.logger.info("[DUT] Verify standard SMP pairing proceeds.")
+      await adapter_cb.wait_for_event(
+          bl4a_api.PairingRequest,
+          predicate=lambda e: e.address == ref_addr,
+          timeout=_DEFAULT_TIMEOUT_SECONDS,
+      )
+      self.assertTrue(self.dut.bt.setPairingConfirmation(ref_addr, True))
+
+      await adapter_cb.wait_for_event(
+          event=bl4a_api.BondStateChanged(
+              address=ref_addr, state=android_constants.BondState.BONDED
+          ),
+          timeout=_DEFAULT_TIMEOUT_SECONDS,
+      )
+      async with self.assert_not_timeout(
+          _DEFAULT_TIMEOUT_SECONDS, msg="Wait for REF pairing complete"
+      ):
+        await pair_task
+      self.logger.info("[DUT] Standard SMP pairing completed successfully.")
+
+  async def test_tak_reject_already_bonded(self) -> None:
+    """Verify that the local Central device refuses to initiate TAK if already bonded."""
+    self._require_tak_support()
+
+    await self.le_connect_and_pair(hci.OwnAddressType.RANDOM)
+
+    ref_connection = self.ref.device.find_connection_by_bd_addr(
+        hci.Address(self.dut.address),
+        transport=core.BT_LE_TRANSPORT,
+    )
+    if ref_connection is None:
+      ref_connection = next(iter(self.ref.device.connections.values()))
+
+    with pyee_extensions.EventWatcher() as watcher:
+      ref_encryption_changed = watcher.async_monitor(
+          ref_connection, ref_connection.EVENT_CONNECTION_ENCRYPTION_CHANGE
+      )
+
+      self.logger.info("[DUT] Call startTakSession on already bonded device.")
+      tak_session = self.test_case_context.enter_context(
+          self.dut.bl4a.start_tak_session(
+              self.ref.random_address, _TAK_KEY, _TAK_SERVICE_UUID
+          )
+      )
+      await tak_session.wait_for_event(
+          event=bl4a_api.TakStateChanged(
+              device=self.ref.random_address,
+              state=android_constants.TakState.NONE,
+              uuid=_TAK_SERVICE_UUID,
+              status=android_constants.BluetoothStatusCode.ERROR_TAK_UNAVAILABLE_BONDED,
+          ),
+          timeout=_DEFAULT_TIMEOUT_SECONDS,
+      )
+
+      self.assertTrue(
+          ref_encryption_changed.empty(),
+          "HCI encryption commands were unexpectedly dispatched.",
+      )
+    self.logger.info(
+        "Verified TAK session was rejected with ERROR_TAK_UNAVAILABLE_BONDED."
+    )
+
+  async def test_tak_terminate_missing_tak(self) -> None:
+    """Verify that local Peripheral terminates connection if Central initiates TAK but no TAK provisioned."""
+    self._require_tak_support()
+
+    # TODO: Remove this check once rootcanal fix is in.
+    if self.dut.device.is_emulator:
+      self.skipTest(
+          "Rootcanal doesn't support LE peripheral key missing verification"
+          " yet."
+      )
+
+    ref_connection, _ = await self._establish_le_acl_connection(
+        is_ref_central=True
+    )
+
+    pairing_keys = keys.PairingKeys()
+    pairing_keys.ltk = keys.PairingKeys.Key(
+        value=_TAK_KEY,
+        rand=b"\x00" * 8,
+        ediv=0,
+    )
+    if self.ref.device.keystore is None:
+      self.ref.device.keystore = keys.MemoryKeyStore()
+    await self.ref.device.update_keys(
+        str(ref_connection.peer_address),
+        pairing_keys,
+    )
+
+    with self.dut.bl4a.register_callback(bl4a_api.Module.ADAPTER):
+      self.logger.info(
+          "[REF] Remote Central sends LE Start Encryption command."
+      )
+      with self.assertRaises(hci.HCI_Error) as cm:
+        await ref_connection.encrypt()
+
+      self.assertEqual(
+          cm.exception.error_code,
+          hci.HCI_PIN_OR_KEY_MISSING_ERROR,
+          "Expected PIN or Key Missing error.",
+      )
+
+  @navi_test_base.named_parameterized(
+      ("central", False),
+      ("peripheral", True),
+  )
+  async def test_tak_discard_key_on_disconnect(
+      self, is_ref_central: bool
+  ) -> None:
+    """Verify that TAK keys are transient and discarded on disconnect.
+
+    Args:
+      is_ref_central: If True, REF is Central and DUT is Peripheral. If False,
+        DUT is Central and REF is Peripheral.
+    """
+    self._require_tak_support()
+
+    # TODO: Remove this check once rootcanal fix is in.
+    if is_ref_central and self.dut.device.is_emulator:
+      self.skipTest(
+          "Rootcanal doesn't support LE peripheral key mismatch verification"
+          " yet."
+      )
+
+    ref_connection, gatt_client = await self._establish_le_acl_connection(
+        is_ref_central
+    )
+    if gatt_client is None and not is_ref_central:
+      self.fail("GATT client was not established for Central DUT.")
+
+    pairing_keys = keys.PairingKeys()
+    pairing_keys.ltk = keys.PairingKeys.Key(
+        value=_TAK_KEY,
+        rand=b"\x00" * 8,
+        ediv=0,
+    )
+    if self.ref.device.keystore is None:
+      self.ref.device.keystore = keys.MemoryKeyStore()
+    await self.ref.device.update_keys(
+        str(ref_connection.peer_address),
+        pairing_keys,
+    )
+
+    tak_session = await self._start_tak_session_and_wait(
+        _TAK_KEY, _TAK_SERVICE_UUID, is_ref_central
+    )
+    if is_ref_central:
+      await ref_connection.encrypt()
+
+    await tak_session.wait_for_event(
+        event=bl4a_api.TakStateChanged(
+            device=self.ref.random_address,
+            state=android_constants.TakState.ENCRYPTED,
+            uuid=_TAK_SERVICE_UUID,
+            status=android_constants.BluetoothStatusCode.SUCCESS,
+        )
+    )
+
+    with self.dut.bl4a.register_callback(bl4a_api.Module.ADAPTER) as adapter_cb:
+      self.logger.info("Disconnect ACL connection.")
+      if is_ref_central:
+        await ref_connection.disconnect()
+      else:
+        assert gatt_client is not None
+        await gatt_client.disconnect()
+
+      await adapter_cb.wait_for_event(
+          event=bl4a_api.AclDisconnected(
+              address=self.ref.random_address,
+              transport=android_constants.Transport.LE,
+          ),
+          timeout=_DEFAULT_TIMEOUT_SECONDS,
+      )
+
+    self.logger.info("Reconnect ACL connection.")
+    ref_connection, gatt_client = await self._establish_le_acl_connection(
+        is_ref_central
+    )
+    await self.ref.device.update_keys(
+        str(ref_connection.peer_address),
+        pairing_keys,
+    )
+
+    self.logger.info("Remote attempts to resume encryption.")
+    if is_ref_central:
+      with self.assertRaises(hci.HCI_Error):
+        await ref_connection.encrypt()
+    else:
+      with pyee_extensions.EventWatcher() as watcher:
+        ref_encryption_changed = watcher.async_monitor(
+            ref_connection, ref_connection.EVENT_CONNECTION_ENCRYPTION_CHANGE
+        )
+
+        self.ref.device.smp_manager.send_command(
+            ref_connection,
+            smp.SMP_Security_Request_Command(
+                auth_req=smp.AuthReq.from_booleans(bonding=False)
+            ),
+        )
+
+        with self.assertRaises(asyncio.TimeoutError):
+          await asyncio.wait_for(
+              ref_encryption_changed.get(),
+              timeout=_PAIRING_SUPPRESSION_TIMEOUT_SECONDS,
+          )
+
+    self.logger.info("Verify Local device rejected encryption.")
+    self.assertFalse(
+        bool(ref_connection.encryption),
+        "Link was unexpectedly encrypted with discarded TAK key.",
+    )
+
+  async def test_tak_gatt_read_encrypted_success(self) -> None:
+    """Verify that reading a characteristic requiring encryption succeeds on a TAK link."""
+    self._require_tak_support()
+
+    characteristic_uuid = "0000fff2-0000-1000-8000-00805f9b34fb"
+    expected_value = b"tak_encrypted_test"
+    self.logger.info(
+        "[REF] Add GATT service with encryption-protected characteristic."
+    )
+    self.ref.device.add_service(
+        gatt.Service(
+            uuid=_TAK_SERVICE_UUID,
+            characteristics=[
+                gatt.Characteristic(
+                    uuid=characteristic_uuid,
+                    properties=gatt.Characteristic.Properties.READ,
+                    permissions=gatt.Characteristic.Permissions.READ_REQUIRES_ENCRYPTION,
+                    value=expected_value,
+                )
+            ],
+        )
+    )
+
+    ref_connection, gatt_client = await self._establish_le_acl_connection(
+        is_ref_central=False
+    )
+    assert gatt_client is not None
+
+    pairing_keys = keys.PairingKeys()
+    pairing_keys.ltk = keys.PairingKeys.Key(
+        value=_TAK_KEY,
+        authenticated=False,
+        rand=b"\x00" * 8,
+        ediv=0,
+    )
+    if self.ref.device.keystore is None:
+      self.ref.device.keystore = keys.MemoryKeyStore()
+
+    await self.ref.device.update_keys(
+        str(ref_connection.peer_address),
+        pairing_keys,
+    )
+
+    self.logger.info("[DUT] Start TAK session.")
+    tak_session = await self._start_tak_session_and_wait(
+        _TAK_KEY, _TAK_SERVICE_UUID, is_ref_central=False
+    )
+
+    self.logger.info("[DUT] Wait for TAK session to reach ENCRYPTED state.")
+    await tak_session.wait_for_event(
+        event=bl4a_api.TakStateChanged(
+            device=self.ref.random_address,
+            state=android_constants.TakState.ENCRYPTED,
+            uuid=_TAK_SERVICE_UUID,
+            status=android_constants.BluetoothStatusCode.SUCCESS,
+        )
+    )
+    self.logger.info("DUT successfully reached ENCRYPTED state.")
+
+    self.logger.info("[DUT] Discover services.")
+    services = await gatt_client.discover_services()
+    characteristic = bl4a_api.find_characteristic_by_uuid(
+        characteristic_uuid, services
+    )
+    if not characteristic.handle:
+      self.fail("Cannot find characteristic handle.")
+
+    self.logger.info("[DUT] Read characteristic requiring encryption.")
+    actual_value = await gatt_client.read_characteristic(characteristic.handle)
+    self.assertEqual(
+        expected_value,
+        actual_value,
+        "Read value did not match expected value.",
+    )
+    self.logger.info("GATT read on TAK encrypted link succeeded.")
 
 
 if __name__ == "__main__":

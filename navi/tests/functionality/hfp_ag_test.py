@@ -15,6 +15,7 @@
 """Tests related to Bluetooth HFP(Hands-Free Profile) AG role on Pixel."""
 
 import asyncio
+import dataclasses
 from unittest import mock
 
 from bumble import core
@@ -62,6 +63,8 @@ class HfpAgVentiTest(navi_test_base.TwoDevicesTestBase):
     )
     # Make sure Bumble is off to cancel any running tasks.
     async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+      for sco_link in list(self.ref.device.sco_links.values()):
+        await sco_link.disconnect()
       await self.ref.close()
     await super().async_teardown_test()
 
@@ -445,6 +448,206 @@ class HfpAgVentiTest(navi_test_base.TwoDevicesTestBase):
                     android_constants.CallEndpointType.EARPIECE,
                     android_constants.CallEndpointType.SPEAKER,
                 ),
+                name=mock.ANY,
+                identifier=mock.ANY,
+            )
+        ),
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
+
+  @navi_test_base.TwoDevicesTestBase.require_flag(
+      "com.android.internal.telecom.flags.call_audio_route_rf",
+  )
+  @navi_test_base.parameterized(
+      hfp.DefaultCodecParameters.SCO_CVSD_D1,
+      hfp.DefaultCodecParameters.ESCO_CVSD_S4,
+  )
+  async def test_reconnect_sco_from_hf(
+      self,
+      codec_parameters: hfp.DefaultCodecParameters,
+  ) -> None:
+    """Tests terminating and reconnecting SCO from HF side.
+
+    Test steps:
+      1. DUT and REF pair and connect HFP.
+      2. DUT receives an incoming call and answers it.
+      3. Wait for SCO to be connected on DUT.
+      4. Verify telecom call endpoint is BLUETOOTH.
+      5. Terminate SCO from REF (HF).
+      6. Wait for SCO to be disconnected on DUT.
+      7. Verify telecom call endpoint is EARPIECE or SPEAKER.
+      8. Initiate SCO connection from REF (HF).
+      9. Wait for SCO to be connected on DUT.
+      10. Verify telecom call endpoint is BLUETOOTH.
+
+    Args:
+      codec_parameters: SCO/eSCO codec parameters used by HF to initiate SCO.
+    """
+    if codec_parameters == hfp.DefaultCodecParameters.SCO_CVSD_D1:
+      # Legacy SCO (HV1/HV2/HV3) is not allowed when BR/EDR Secure Connections
+      # (AES-CCM) is enabled on the ACL link.
+      self.ref.device.classic_sc_enabled = False
+      await self.ref.device.power_on()
+
+    # Setup HFP server on REF
+    ref_hfp_protocol_queue = hfp_ext.HfProtocol.setup_server(
+        self.ref.device,
+        sdp_handle=_HFP_SDP_HANDLE,
+        configuration=hfp_ext.make_hf_configuration(),
+        auto_accept_sco_request=False,
+    )
+
+    @self.ref.device.on(self.ref.device.EVENT_SCO_REQUEST)
+    async def _(connection: device_lib.Connection, link_type: int) -> None:
+      del link_type
+      accept_parameters = dataclasses.replace(
+          hfp.ESCO_PARAMETERS[hfp.DefaultCodecParameters.ESCO_CVSD_S4],
+          input_data_path=hci.HCI_Enhanced_Setup_Synchronous_Connection_Command.DataPath.PCM,
+          output_data_path=hci.HCI_Enhanced_Setup_Synchronous_Connection_Command.DataPath.PCM,
+      )
+      await self.ref.device.send_command(
+          hci.HCI_Enhanced_Accept_Synchronous_Connection_Request_Command(
+              bd_addr=connection.peer_address,
+              **accept_parameters.asdict(),
+          )
+      )
+
+    sco_links = asyncio.Queue[device_lib.ScoLink]()
+    self.ref.device.on(
+        self.ref.device.EVENT_SCO_CONNECTION, sco_links.put_nowait
+    )
+
+    dut_hfp_ag_cb = self.dut.bl4a.register_callback(_Module.HFP_AG)
+    self.test_case_context.enter_context(dut_hfp_ag_cb)
+    # Step 1: Connect and pair
+    self.logger.info("[DUT] Setup pairing and initial HFP connection.")
+    await self.classic_connect_and_pair(connect_profiles=True)
+
+    # Wait for HFP connected on DUT
+    await dut_hfp_ag_cb.wait_for_event(
+        bl4a_api.ProfileActiveDeviceChanged(address=self.ref.address),
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
+
+    # Get HfProtocol on REF
+    async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+      ref_hfp_protocol = await ref_hfp_protocol_queue.get()
+
+    # Step 2: DUT receives an incoming call
+    self.logger.info("[DUT] Receive an incoming call.")
+    call = self.dut.bl4a.make_phone_call(
+        caller_name=_CALLER_NAME,
+        caller_number=_CALLER_NUMBER,
+        direction=constants.Direction.INCOMING,
+    )
+    self.test_case_context.enter_context(call)
+    # Answer the call
+    self.logger.info("[DUT] Answer the call.")
+    call.answer()
+
+    # Start streaming to trigger SCO
+    self.logger.info("[DUT] Play sine wave to trigger SCO.")
+    self.dut.bt.audioPlaySine()
+
+    # Step 3: Wait for SCO connected on DUT
+    self.logger.info("[DUT] Wait for SCO connected.")
+    await dut_hfp_ag_cb.wait_for_event(
+        bl4a_api.HfpAgAudioStateChanged(
+            address=self.ref.address,
+            state=android_constants.ScoState.CONNECTED,
+        )
+    )
+
+    # Also wait for REF to register the connection
+    self.logger.info("[REF] Wait for SCO connection event.")
+    async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+      sco_link = await sco_links.get()
+
+    # Step 4: Verify telecom call endpoint is BLUETOOTH
+    self.logger.info("[DUT] Verify call endpoint is BLUETOOTH.")
+    await call.wait_for_event(
+        call.CallEndpointChanged(
+            call.CallEndpoint(
+                type=android_constants.CallEndpointType.BLUETOOTH,
+                name=mock.ANY,
+                identifier=mock.ANY,
+            )
+        )
+    )
+
+    # Step 5: Terminate SCO from REF (HF)
+    self.logger.info("[REF] Terminate SCO.")
+    async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+      await sco_link.disconnect()
+
+    # Step 6: Wait for SCO disconnected on DUT
+    self.logger.info("[DUT] Wait for SCO disconnected.")
+    await dut_hfp_ag_cb.wait_for_event(
+        bl4a_api.HfpAgAudioStateChanged(
+            address=self.ref.address,
+            state=android_constants.ScoState.DISCONNECTED,
+        )
+    )
+
+    # Step 7: Verify telecom call endpoint is EARPIECE or SPEAKER
+    self.logger.info("[DUT] Verify call endpoint is EARPIECE or SPEAKER.")
+    await call.wait_for_event(
+        call.CallEndpointChanged(
+            call.CallEndpoint(
+                type=matcher.any_of(
+                    android_constants.CallEndpointType.EARPIECE,
+                    android_constants.CallEndpointType.SPEAKER,
+                ),
+                name=mock.ANY,
+                identifier=mock.ANY,
+            )
+        ),
+        timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+    )
+
+    # Step 8: Initiate SCO connection from REF (HF)
+    self.logger.info(
+        "[REF] Initiate SCO connection with %s.", codec_parameters.name
+    )
+    esco_parameters = dataclasses.replace(
+        hfp.ESCO_PARAMETERS[codec_parameters],
+        input_data_path=hci.HCI_Enhanced_Setup_Synchronous_Connection_Command.DataPath.PCM,
+        output_data_path=hci.HCI_Enhanced_Setup_Synchronous_Connection_Command.DataPath.PCM,
+    )
+    if codec_parameters == hfp.DefaultCodecParameters.SCO_CVSD_D1:
+      esco_parameters.packet_type |= (
+          hci.HCI_Enhanced_Setup_Synchronous_Connection_Command.PacketType.NO_2_EV3
+          | hci.HCI_Enhanced_Setup_Synchronous_Connection_Command.PacketType.NO_3_EV3
+          | hci.HCI_Enhanced_Setup_Synchronous_Connection_Command.PacketType.NO_2_EV5
+          | hci.HCI_Enhanced_Setup_Synchronous_Connection_Command.PacketType.NO_3_EV5
+      )
+    connection = ref_hfp_protocol.dlc.multiplexer.l2cap_channel.connection
+    await self.ref.device.send_command(
+        hci.HCI_Enhanced_Setup_Synchronous_Connection_Command(
+            connection_handle=connection.handle,
+            **esco_parameters.asdict(),
+        )
+    )
+
+    # Step 9: Wait for SCO connected on DUT and REF
+    self.logger.info("[DUT] Wait for SCO connected.")
+    await dut_hfp_ag_cb.wait_for_event(
+        bl4a_api.HfpAgAudioStateChanged(
+            address=self.ref.address,
+            state=android_constants.ScoState.CONNECTED,
+        )
+    )
+
+    self.logger.info("[REF] Wait for SCO connection event.")
+    async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+      await sco_links.get()
+
+    # Step 10: Verify telecom call endpoint is BLUETOOTH
+    self.logger.info("[DUT] Verify call endpoint is BLUETOOTH.")
+    await call.wait_for_event(
+        call.CallEndpointChanged(
+            call.CallEndpoint(
+                type=android_constants.CallEndpointType.BLUETOOTH,
                 name=mock.ANY,
                 identifier=mock.ANY,
             )

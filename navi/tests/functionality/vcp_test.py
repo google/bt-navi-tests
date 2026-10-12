@@ -54,6 +54,13 @@ class VcpTest(navi_test_base.TwoDevicesTestBase):
     if not self.dut.is_le_audio_supported:
       raise signals.TestAbortClass("[DUT] Device does not support LE Audio.")
 
+  @override
+  async def async_setup_test(self) -> None:
+    await super().async_setup_test()
+    # Make sure VOLUME_CONTROL profile is connected after Bluetooth restart,
+    # or registerVolumeControlCallback will silently fail while service is null.
+    self.dut.bt.waitForProfileReady(android_constants.Profile.VOLUME_CONTROL)
+
   async def _check_default_aics_properties(
       self, aics_cb: bl4a_api.AudioInputControl
   ) -> None:
@@ -264,46 +271,46 @@ class VcpTest(navi_test_base.TwoDevicesTestBase):
 
   async def test_vocs_set_volume_offset(self) -> None:
     """Tests that VOCS volume offset can be set."""
-    with await self._setup_vocs_and_connect() as vcp_cb:
-      self.assertTrue(
-          self.dut.bt.isVolumeOffsetAvailable(self.ref.random_address)
-      )
-      self.assertEqual(
-          self.dut.bt.getNumberofVocsInstances(self.ref.random_address),
-          1,
-      )
+    vcp_cb = await self._setup_vocs_and_connect()
+    self.assertTrue(
+        self.dut.bt.isVolumeOffsetAvailable(self.ref.random_address)
+    )
+    self.assertEqual(
+        self.dut.bt.getNumberofVocsInstances(self.ref.random_address),
+        1,
+    )
 
-      async with self.assert_not_timeout(_TIMEOUT):
-        await asyncio.to_thread(
-            self.dut.bt.setVolumeOffset, self.ref.random_address, 1, 100
-        )
-        self.logger.info("[DUT] Waiting for VOCS offset to be changed...")
-        # we are getting the offset 256 times the value we pass
-        await vcp_cb.wait_for_event(
-            event=bl4a_api.VocsOffsetStateChanged(
-                address=self.ref.random_address,
-                instance_id=1,
-                offset=25600,
-            )
-        )
+    async with self.assert_not_timeout(_TIMEOUT):
+      await asyncio.to_thread(
+          self.dut.bt.setVolumeOffset, self.ref.random_address, 1, 100
+      )
+      self.logger.info("[DUT] Waiting for VOCS offset to be changed...")
+      # we are getting the offset 256 times the value we pass
+      await vcp_cb.wait_for_event(
+          event=bl4a_api.VocsOffsetStateChanged(
+              address=self.ref.random_address,
+              instance_id=1,
+              offset=25600,
+          )
+      )
 
   async def test_vocs_set_device_volume(self) -> None:
     """Tests that VOCS device volume can be set."""
-    with await self._setup_vocs_and_connect() as vcp_cb:
-      self.assertTrue(
-          self.dut.bt.isVolumeOffsetAvailable(self.ref.random_address)
+    vcp_cb = await self._setup_vocs_and_connect()
+    self.assertTrue(
+        self.dut.bt.isVolumeOffsetAvailable(self.ref.random_address)
+    )
+    self.assertEqual(
+        self.dut.bt.getNumberofVocsInstances(self.ref.random_address),
+        1,
+    )
+    async with self.assert_not_timeout(_TIMEOUT):
+      await asyncio.to_thread(
+          self.dut.bt.vcpSetDeviceVolume, self.ref.random_address, 100, True
       )
-      self.assertEqual(
-          self.dut.bt.getNumberofVocsInstances(self.ref.random_address),
-          1,
+      await vcp_cb.wait_for_event(
+          bl4a_api.DeviceVolumeChanged(
+              address=self.ref.random_address,
+              volume=100,
+          )
       )
-      async with self.assert_not_timeout(_TIMEOUT):
-        await asyncio.to_thread(
-            self.dut.bt.vcpSetDeviceVolume, self.ref.random_address, 100, True
-        )
-        await vcp_cb.wait_for_event(
-            bl4a_api.DeviceVolumeChanged(
-                address=self.ref.random_address,
-                volume=100,
-            )
-        )

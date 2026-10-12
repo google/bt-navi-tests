@@ -279,9 +279,16 @@ class AndroidSnippetDeviceWrapper:
     else:
       raise ValueError(f"Invalid property value: {text}")
 
-  def setprop(self, prop_name: str, prop_value: str) -> None:
-    """Sets a property of the device."""
-    self.adb.shell(["setprop", prop_name, f"'{prop_value}'"])
+  def setprop(self, prop_name: str, prop_value: str | None = "") -> None:
+    """Sets a property of the device.
+
+    Args:
+      prop_name: The name of the property to set.
+      prop_value: The value to set the property to. An empty string or None
+        clears the property.
+    """
+    value = "" if prop_value is None else str(prop_value)
+    self.shell(f"setprop {prop_name} '{value}'")
 
   @property
   @retry_lib.retry_on_exception(initial_delay_sec=1, num_retries=3)
@@ -412,7 +419,7 @@ def parameterized(
         raise ValueError(
             f"Invalid args: {args}. The signature is {signature}"
         ) from e
-      testcase_name = ", ".join(
+      testcase_name = ",".join(
           [getattr(arg, "name", None) or str(arg) for arg in args]
       )
       # Replace reserved characters with their Unicode equivalents.
@@ -1148,7 +1155,7 @@ class AndroidBumbleTestBase(BaseTestBase):
             ),
             "wb",
         ) as f:
-          f.write(ref.snoop_buffer.getbuffer())
+          f.write(ref.snoop_buffer.getvalue())
         if isinstance(ref.adapter, crown.AndroidCrownAdapter):
           adb_snippets.download_btsnoop(
               device=ref.adapter.ad,
@@ -1193,7 +1200,11 @@ class AndroidBumbleTestBase(BaseTestBase):
     # Check if snippet is broken.
     try:
       self.dut.bt.ping()
-    except (BrokenPipeError, mobly.snippet.errors.Error) as e:
+      if (
+          event_client := getattr(self.dut.bt, "_event_client", None)
+      ) is not None:
+        event_client.ping()
+    except (BrokenPipeError, mobly.snippet.errors.Error, AttributeError) as e:
       if self.dut.device.is_adb_detectable():
         self.logger.exception("Snippet is broken, reloading")
         self.dut.reload_snippet()

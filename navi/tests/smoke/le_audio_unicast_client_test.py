@@ -50,7 +50,6 @@ from navi.utils import constants
 from navi.utils import lc3
 from navi.utils import pyee_extensions
 
-
 _DEFAUILT_ADVERTISING_PARAMETERS = device.AdvertisingParameters(
     own_address_type=hci.OwnAddressType.RANDOM,
     primary_advertising_interval_min=20,
@@ -453,6 +452,10 @@ class LeAudioUnicastClientTest(navi_test_base.TwoDevicesTestBase):
         bl4a_api.AudioAttributes(usage=bl4a_api.AudioAttributes.Usage.GAME),
         handle_audio_focus=False,
     )
+    self.dut.bt.audioSetRepeat(android_constants.RepeatMode.ONE)
+    self.test_case_context.callback(
+        lambda: self.dut.bt.audioSetRepeat(android_constants.RepeatMode.OFF)
+    )
     communication_player = self.dut.bt.addPlayer()
     self.dut.bl4a.set_audio_attributes(
         bl4a_api.AudioAttributes(
@@ -489,6 +492,13 @@ class LeAudioUnicastClientTest(navi_test_base.TwoDevicesTestBase):
     await asyncio.to_thread(self.dut.bt.audioPlaySine)
     self.logger.info("[DUT] Start communication audio streaming")
     await asyncio.to_thread(self.dut.bt.audioPlaySine, communication_player)
+    async with self.assert_not_timeout(
+        _DEFAULT_STEP_TIMEOUT_SECONDS,
+        msg="[REF] Wait for sink audio to start",
+    ):
+      await _wait_for_ase_state(
+          sink_ase, ascs.AudioStreamEndpointCharacteristic.State.STREAMING
+      )
     self.logger.info("[DUT] Start audio recording")
     recorder = await self.dut.bl4a.start_audio_recording(
         _RECORDING_PATH,

@@ -141,6 +141,9 @@ class OppTest(navi_test_base.TwoDevicesTestBase):
           ),
       )
 
+    # Stop the Settings to reset device picker activity.
+    self.dut.shell('am force-stop com.android.settings')
+
   async def _wait_for_incoming_share_id(self) -> int:
     """Waits for incoming OPP file transfer request via ADB query."""
     async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):

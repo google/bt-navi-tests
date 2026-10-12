@@ -48,7 +48,9 @@ import com.google.android.mobly.snippet.rpc.RpcOptional
 import com.google.android.mobly.snippet.rpc.RunOnUiThread
 import com.google.wireless.android.pixel.bluetooth.snippet.JsonObjectConverter.Companion.toJson
 import com.google.wireless.android.pixel.bluetooth.snippet.Utils.postSnippetEvent
+import java.io.File
 import java.io.FileOutputStream
+import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
@@ -57,9 +59,10 @@ import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 
@@ -80,8 +83,8 @@ class AudioSnippet : Snippet {
   private val mainHandler = Handler(context.mainLooper)
   private val dispatcher: CoroutineDispatcher =
     Executors.newSingleThreadExecutor().asCoroutineDispatcher()
-  private val coroutineScope = CoroutineScope(dispatcher + Job())
-  internal val recorders = mutableMapOf<String, Pair<AudioRecord, Deferred<List<Byte>>>>()
+  private val coroutineScope = CoroutineScope(dispatcher + SupervisorJob())
+  internal val recorders = mutableMapOf<String, Pair<AudioRecord, Deferred<Long>>>()
   private val headTrackerListeners =
     mutableMapOf<String, Spatializer.OnHeadTrackerAvailableListener>()
 
@@ -471,13 +474,24 @@ class AudioSnippet : Snippet {
     }
     recorder.startRecording()
     val deferred = coroutineScope.async {
-      val outputBuffer = mutableListOf<Byte>()
-      val buffer = ByteArray(bufferSize)
-      while (recorder.read(buffer, 0, buffer.size) > 0) {
-        outputBuffer.addAll(buffer.asList())
+      var totalBytes = 0L
+      File(outputPath).parentFile?.mkdirs()
+      FileOutputStream(outputPath).use { fos ->
+        // Write placeholder 44-byte WAV header
+        fos.write(ByteArray(44))
+        val buffer = ByteArray(bufferSize)
+        while (isActive) {
+          val bytesRead = recorder.read(buffer, 0, buffer.size)
+          if (bytesRead > 0) {
+            fos.write(buffer, 0, bytesRead)
+            totalBytes += bytesRead
+          } else {
+            break
+          }
+        }
       }
-      Log.d(TAG, "Recording ${outputPath} stopped")
-      outputBuffer
+      Log.d(TAG, "Recording ${outputPath} stopped, totalBytes=$totalBytes")
+      totalBytes
     }
     recorders[outputPath] = Pair(recorder, deferred)
   }
@@ -487,16 +501,21 @@ class AudioSnippet : Snippet {
   fun stopRecording(outputPath: String) {
     recorders.remove(outputPath)?.let { (recorder, deferred) ->
       recorder.stop()
-      recorder.release()
-      val outputBuffer = runBlocking { withTimeout(5.seconds) { deferred.await() } }
-      FileOutputStream(outputPath).use {
-        // Write the wave header.
-        it.write(
+      val totalBytes = runBlocking {
+        try {
+          withTimeout(5.seconds) { deferred.await() }
+        } finally {
+          recorder.release()
+        }
+      }
+      RandomAccessFile(outputPath, "rw").use { raf ->
+        raf.seek(0)
+        raf.write(
           ByteBuffer.allocate(44)
             .apply {
               order(ByteOrder.LITTLE_ENDIAN)
               put(WAVE_HEADER_RIFF)
-              putInt(outputBuffer.size + 36) // File size
+              putInt((totalBytes + 36).toInt()) // File size
               put(WAVE_HEADER_WAVE)
               put(WAVE_HEADER_FMT)
               putInt(16) // Size of previous headers
@@ -507,13 +526,25 @@ class AudioSnippet : Snippet {
               putShort((2 * 16 / 8).toShort()) // Frame size
               putShort(16) // Bits per sample
               put(WAVE_HEADER_DATA) // data
-              putInt(outputBuffer.size) // Data size
+              putInt(totalBytes.toInt()) // Data size
             }
             .array()
         )
-        it.write(outputBuffer.toByteArray())
       }
     } ?: throw IllegalArgumentException("$outputPath is not recording")
+  }
+
+  override fun shutdown() {
+    for ((_, pair) in recorders) {
+      val (recorder, deferred) = pair
+      try {
+        recorder.stop()
+      } finally {
+        recorder.release()
+        deferred.cancel()
+      }
+    }
+    recorders.clear()
   }
 
   /** Gets the currently selected communication device. */
@@ -574,7 +605,7 @@ class AudioSnippet : Snippet {
     }
   }
 
-  @Rpc(description = "Get compatible Spatializer devices")
+  @Rpc(description = "Set headtracker enabled for device")
   fun setHeadtrackerEnabled(role: Int, type: Int, address: String, enabled: Boolean) {
     audioManager.spatializer.setHeadTrackerEnabled(
       enabled,
@@ -582,9 +613,13 @@ class AudioSnippet : Snippet {
     )
   }
 
-  @Rpc(description = "Get compatible Spatializer devices")
+  @Rpc(description = "Check if headtracker is enabled for device")
   fun getHeadtrackerEnabled(role: Int, type: Int, address: String): Boolean =
     audioManager.spatializer.isHeadTrackerEnabled(AudioDeviceAttributes(role, type, address))
+
+  @Rpc(description = "Check if headtracker is available for device")
+  fun hasHeadtracker(role: Int, type: Int, address: String): Boolean =
+    audioManager.spatializer.hasHeadTracker(AudioDeviceAttributes(role, type, address))
 
   @AsyncRpc(description = "Registers a HeadTracker availability callback")
   fun audioRegisterHeadTrackerCallback(callbackId: String) {
