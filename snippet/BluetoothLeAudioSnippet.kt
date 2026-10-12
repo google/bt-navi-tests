@@ -18,6 +18,8 @@ package com.google.wireless.android.pixel.bluetooth.snippet
 
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothLeAudio
+import android.bluetooth.BluetoothLeAudioCodecConfig
+import android.bluetooth.BluetoothLeAudioCodecStatus
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
@@ -92,6 +94,26 @@ class BluetoothLeAudioSnippet : Snippet {
   @Rpc(description = "Get connected LE Audio devices list")
   fun leaGetConnectedDevices(): List<String> {
     return leaProxy.connectedDevices.map { it.address }.toList()
+  }
+
+  /** Gets LE Audio group ID for device [address]. */
+  @Rpc(description = "Get LE Audio group ID")
+  fun getLeAudioGroupId(address: String): Int =
+    leaProxy.getGroupId(bluetoothAdapter.getRemoteDevice(address))
+
+  /** Gets LE Audio codec status for [groupId]. */
+  @Rpc(description = "Get LE Audio codec status")
+  fun getLeAudioCodecStatus(groupId: Int): BluetoothLeAudioCodecStatus? =
+    leaProxy.getCodecStatus(groupId)
+
+  /** Sets LE Audio codec config preference for [groupId]. */
+  @Rpc(description = "Set LE Audio codec config preference")
+  fun setLeAudioCodecConfigPreference(
+    groupId: Int,
+    inputCodecConfig: BluetoothLeAudioCodecConfig,
+    outputCodecConfig: BluetoothLeAudioCodecConfig,
+  ) {
+    leaProxy.setCodecConfigPreference(groupId, inputCodecConfig, outputCodecConfig)
   }
 
   companion object {

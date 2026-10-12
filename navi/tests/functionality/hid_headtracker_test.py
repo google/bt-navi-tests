@@ -266,6 +266,19 @@ class HidHeadtrackerTest(navi_test_base.TwoDevicesTestBase):
     )
     self.assertIn(self.ref.random_address, compatible_spatizlier_devices)
 
+    # Wait for dynamic headtracker sensor to be registered with Spatializer
+    self.logger.info("[DUT] Wait for headtracker sensor registration")
+
+    async def _wait_for_headtracker() -> None:
+      while not self.dut.bt.hasHeadtracker(
+          android_constants.AudioDeviceRole.OUTPUT,
+          android_constants.AudioDeviceType.BLE_HEADSET,
+          self.ref.random_address,
+      ):
+        await asyncio.sleep(0.1)
+
+    await asyncio.wait_for(_wait_for_headtracker(), timeout=30.0)
+
     self.logger.info("[DUT] Set headtracker enabled")
     self.dut.bt.setHeadtrackerEnabled(
         android_constants.AudioDeviceRole.OUTPUT,
@@ -274,21 +287,19 @@ class HidHeadtrackerTest(navi_test_base.TwoDevicesTestBase):
         True,
     )
 
-    # Wait for headtracker to be available (dynamic sensor registration)
+    is_headtracker_enabled = self.dut.bt.getHeadtrackerEnabled(
+        android_constants.AudioDeviceRole.OUTPUT,
+        android_constants.AudioDeviceType.BLE_HEADSET,
+        self.ref.random_address,
+    )
+    self.logger.info("[DUT] Is headtracker enabled: %s", is_headtracker_enabled)
+    self.assertTrue(is_headtracker_enabled)
+
+    # Wait for headtracker to be available
     self.logger.info("[DUT] Wait for headtracker to be available")
     await dut_ht_cb.wait_for_event(
         bl4a_api.HeadTrackerAvailableChanged(available=True)
     )
-
-    # TODO: Re-enable this check once the bug is fixed.
-    # is_headtracker_enabled = self.dut.bt.getHeadtrackerEnabled(
-    #     android_constants.AudioDeviceRole.OUTPUT,
-    #     android_constants.AudioDeviceType.BLE_HEADSET,
-    #     self.ref.random_address,
-    # )
-    # self.logger.info("[DUT] Is headtracker enabled: %s",
-    # is_headtracker_enabled)
-    # self.assertTrue(is_headtracker_enabled)
 
   async def test_connect_without_hid_service(self) -> None:
     """Tests connecting HID Head Tracker when no standard HID/HOGP service is registered on REF.

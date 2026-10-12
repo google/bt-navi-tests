@@ -35,11 +35,6 @@ from navi.utils import constants
 _A2DP_SERVICE_RECORD_HANDLE = 1
 _DEFAULT_STEP_TIMEOUT_SECONDS = 5.0
 _DEFAULT_STREAM_DURATION_SECONDS = 3.0
-_FLAG_A2DP_OFFLOAD_USER_CODEC_SELECTION = (
-    "com.android.bluetooth.flags.a2dp_offload_user_codec_selection"
-)
-_PROPERTY_A2DP_OFFLOAD_SUPPORTED = "ro.bluetooth.a2dp_offload.supported"
-_PROPERTY_VND_AUDIO_LEAUDIO_SW_OFFLOAD = "persist.vendor.audio.sw_offload"
 
 _Issuer = constants.TestRole
 _A2dpState = android_constants.A2dpState
@@ -62,24 +57,6 @@ class A2dpTest(navi_test_base.TwoDevicesTestBase):
       self.setprop_for_class_context(
           android_constants.Property.A2DP_SOURCE_OPUS_ENABLED, "true"
       )
-
-    # TODO: Remove this once the flag is removed.
-    if (
-        (self.dut.getprop(_PROPERTY_A2DP_OFFLOAD_SUPPORTED) == "true")
-        and (
-            self.dut.getprop(
-                android_constants.Property.A2DP_CODEC_EXTENSIBILITY
-            )
-            == "true"
-        )
-        and (self.dut.getprop(_PROPERTY_VND_AUDIO_LEAUDIO_SW_OFFLOAD) == "true")
-    ):
-      if not self.setflag_for_class_context(
-          _FLAG_A2DP_OFFLOAD_USER_CODEC_SELECTION, True
-      ):
-        raise signals.TestAbortClass(
-            f"Failed to set flag {_FLAG_A2DP_OFFLOAD_USER_CODEC_SELECTION}"
-        )
 
   @override
   async def async_setup_test(self) -> None:
@@ -386,6 +363,17 @@ class A2dpTest(navi_test_base.TwoDevicesTestBase):
 
         self.logger.info("[DUT] Enable spatializer.")
         self.dut.bt.setSpatializerEnabled(True)
+        self.dut.bt.addCompatibleSpatizlierDevice(
+            android_constants.AudioDeviceRole.OUTPUT,
+            android_constants.AudioDeviceType.BLUETOOTH_A2DP,
+            self.ref.address,
+        )
+        self.test_case_context.callback(
+            self.dut.bt.removeCompatibleSpatizlierDevice,
+            android_constants.AudioDeviceRole.OUTPUT,
+            android_constants.AudioDeviceType.BLUETOOTH_A2DP,
+            self.ref.address,
+        )
 
       ref_sinks = a2dp_ext.find_local_endpoints_by_codec(
           ref_avdtp_connection,

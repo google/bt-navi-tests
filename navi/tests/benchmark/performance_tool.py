@@ -15,6 +15,7 @@
 """Performance tool for Bluetooth tests."""
 
 import asyncio
+import contextlib
 import datetime
 from typing import Self
 
@@ -106,7 +107,7 @@ async def terminate_connection_from_dut(
 
 async def terminate_connection_from_ref(
     dut: navi_test_base.AndroidSnippetDeviceWrapper,
-    ref: crown.CrownDevice
+    ref: crown.CrownDevice,
 ) -> None:
   """Terminates the connection from the REF side.
 
@@ -114,16 +115,27 @@ async def terminate_connection_from_ref(
     dut: The Android device wrapper.
     ref: The Crown device.
   """
-  with dut.bl4a.register_callback(bl4a_api.Module.ADAPTER) as dut_cb:
-    ref_acl = ref.device.find_connection_by_bd_addr(
-        hci.Address(dut.address), transport=core.PhysicalTransport.BR_EDR
-    )
-    if ref_acl is None:
-      return
-
+  ref_acl = ref.device.find_connection_by_bd_addr(
+      hci.Address(dut.address), transport=core.PhysicalTransport.BR_EDR
+  )
+  if ref_acl is not None:
     await ref_acl.disconnect()
-    await dut_cb.wait_for_event(
-        bl4a_api.AclDisconnected(
-            ref.address, transport=android_constants.Transport.CLASSIC
-        ),
-    )
+
+  with contextlib.suppress(Exception):
+    if dut.bt.getDeviceConnected(
+        ref.address, android_constants.Transport.CLASSIC
+    ):
+      with dut.bl4a.register_callback(bl4a_api.Module.ADAPTER) as dut_cb:
+        if dut.bt.getDeviceConnected(
+            ref.address, android_constants.Transport.CLASSIC
+        ):
+          await dut_cb.wait_for_event(
+              bl4a_api.AclDisconnected(
+                  address=ref.address,
+                  transport=android_constants.Transport.CLASSIC,
+              ),
+              timeout=datetime.timedelta(seconds=5),
+          )
+
+  # Leave a gap between connections to let controller settle.
+  await asyncio.sleep(1.0)

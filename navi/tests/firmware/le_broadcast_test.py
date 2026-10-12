@@ -274,11 +274,7 @@ class LeBroadcastTest(test_base.DualDeviceTestBase):
       big = await self._create_big(self.ref.device)
       big_sync = await self._create_big_sync(self.dut.device, big)
       self.logger.info('[DUT] Terminating big sync.')
-      # TODO: Use big_sync.terminate() once the bug is fixed.
-      await self.dut.device.send_command(
-          hci.HCI_LE_BIG_Terminate_Sync_Command(big_handle=big_sync.big_handle),
-          check_result=True,
-      )
+      await big_sync.terminate()
 
   async def test_big_sync_lost(self) -> None:
     """Test Big Sync lost due to source termination.

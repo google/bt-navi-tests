@@ -163,7 +163,13 @@ class BluetoothVolumeControlSnippet : Snippet {
   @Rpc(description = "Unregisters a callback for Connection state changes and VCP events.")
   fun unregisterVolumeControlCallback(callbackId: String) {
     vcpCallbacks.remove(callbackId)?.let { context.unregisterReceiver(it) }
-    vcpProfileCallbacks.remove(callbackId)?.let { vcpProxy.unregisterCallback(it) }
+    vcpProfileCallbacks.remove(callbackId)?.let {
+      try {
+        vcpProxy.unregisterCallback(it)
+      } catch (e: IllegalArgumentException) {
+        Log.e(TAG, "Failed to unregister volume control callback for $callbackId", e)
+      }
+    }
   }
 
   @AsyncRpc(description = "Registers a callback for VCP events including connection state changes.")

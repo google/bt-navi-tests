@@ -598,6 +598,107 @@ class PbapTest(navi_test_base.TwoDevicesTestBase):
       self.assertEqual(full_name, call_logs[i]["name"])
       self.assertEqual(vcard["TEL;TYPE=0"], call_logs[i]["number"])
 
+  async def test_pull_phonebook_with_pagination(self) -> None:
+    """Tests downloading phonebook with pagination (offset & limit)."""
+    batch_size = 5
+    client = await self._make_pbap_client_from_ref(_BearerType.RFCOMM)
+
+    async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
+      connect_response = await client.send_request(_CONNECT_REQUEST)
+    self.assertEqual(connect_response.response_code, obex.ResponseCode.SUCCESS)
+    connection_id = connect_response.headers.connection_id
+    if connection_id is None:
+      self.fail("Missing Connection ID.")
+
+    # Get total size
+    size_request = obex.Request(
+        opcode=obex.Opcode.GET,
+        final=True,
+        headers=obex.Headers(
+            connection_id=connection_id,
+            name="telecom/pb.vcf",
+            type=_PBAP_PHONE_BOOK_TYPE,
+            app_parameters=pbap.ApplicationParameters(
+                format=pbap.ApplicationParameterValue.Format.V_3_0,
+                max_list_count=0,
+                list_start_offset=0,
+            ).to_bytes(),
+        ),
+    )
+    async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
+      size_response = await client.send_request(size_request)
+    self.assertEqual(size_response.response_code, obex.ResponseCode.SUCCESS)
+    app_params = pbap.ApplicationParameters.from_bytes(
+        size_response.headers.app_parameters or b""
+    )
+    total_size = (
+        app_params.phonebook_size
+        if app_params.phonebook_size is not None
+        else (len(self.contacts) + 1)
+    )
+
+    all_downloaded_body = b""
+    for offset in range(0, total_size, batch_size):
+      page_request = obex.Request(
+          opcode=obex.Opcode.GET,
+          final=True,
+          headers=obex.Headers(
+              connection_id=connection_id,
+              name="telecom/pb.vcf",
+              type=_PBAP_PHONE_BOOK_TYPE,
+              app_parameters=pbap.ApplicationParameters(
+                  format=pbap.ApplicationParameterValue.Format.V_3_0,
+                  max_list_count=batch_size,
+                  list_start_offset=offset,
+              ).to_bytes(),
+          ),
+      )
+      async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
+        page_response = await client.send_request(page_request)
+      self.assertEqual(page_response.response_code, obex.ResponseCode.SUCCESS)
+      all_downloaded_body += (
+          page_response.headers.body
+          or page_response.headers.end_of_body
+          or b""
+      )
+
+    vcards = _parse_vcard_list(all_downloaded_body)
+    self.assertLen(vcards, total_size)
+
+  async def test_pull_empty_phonebook(self) -> None:
+    """Tests pulling phonebook when contact database is empty."""
+    self.dut.bt.clearContacts()
+    client = await self._make_pbap_client_from_ref(_BearerType.RFCOMM)
+
+    async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
+      connect_response = await client.send_request(_CONNECT_REQUEST)
+    self.assertEqual(connect_response.response_code, obex.ResponseCode.SUCCESS)
+    connection_id = connect_response.headers.connection_id
+    if connection_id is None:
+      self.fail("Missing Connection ID.")
+
+    request = obex.Request(
+        opcode=obex.Opcode.GET,
+        final=True,
+        headers=obex.Headers(
+            connection_id=connection_id,
+            name="telecom/pb.vcf",
+            type=_PBAP_PHONE_BOOK_TYPE,
+            app_parameters=pbap.ApplicationParameters(
+                format=pbap.ApplicationParameterValue.Format.V_3_0,
+                max_list_count=_MAX_LIST_COUNT,
+                list_start_offset=0,
+            ).to_bytes(),
+        ),
+    )
+    async with self.assert_not_timeout(_DEFAULT_TIMEOUT_SECONDS):
+      response = await client.send_request(request)
+    self.assertEqual(response.response_code, obex.ResponseCode.SUCCESS)
+    body = response.headers.body or response.headers.end_of_body or b""
+    vcards = _parse_vcard_list(body)
+    # When empty, at most owner card (1) or 0 cards returned
+    self.assertLessEqual(len(vcards), 1)
+
 
 if __name__ == "__main__":
   test_runner.main()

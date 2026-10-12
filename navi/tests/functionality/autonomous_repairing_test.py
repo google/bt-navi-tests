@@ -46,6 +46,7 @@ from navi.utils import pairing as pairing_utils
 
 _DEFAULT_STEP_TIMEOUT_SECONDS = 10.0
 _DEFAULT_ACL_DISCONNECTION_TIMEOUT_SECONDS = 60.0
+_SMP_RSP_TIMEOUT_MS = 5000
 _RFCOMM_UUID = "130c8436-15ac-4d08-aa60-595af4547e8d"
 _RFCOMM_SERVICE_RECORD_HANDLE = 1
 _DEFAUILT_ADVERTISING_PARAMETERS = device.AdvertisingParameters(
@@ -75,10 +76,15 @@ _IoCapability = pairing.PairingDelegate.IoCapability
 class AutonomousRepairingTest(navi_test_base.TwoDevicesTestBase):
   """Test Bluetooth Autonomous Repairing."""
 
+  @override
   async def async_setup_class(self) -> None:
     await super().async_setup_class()
     if self.dut.is_watch:
       raise signals.TestAbortClass("This test is not supported on watches.")
+    self.setprop_for_class_context(
+        android_constants.Property.SMP_RSP_TIMEOUT_MS,
+        str(_SMP_RSP_TIMEOUT_MS),
+    )
 
   def _check_bond_on_dut(
       self,

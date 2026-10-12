@@ -476,10 +476,6 @@ class LeConnectionTest(test_base.DualDeviceTestBase):
           hci.LeFeatureMask.CONNECTED_ISOCHRONOUS_STREAM_CENTRAL
       ):
         self.skipTest('CIS central is not supported on REF.')
-      # TODO: Remove once the flag is rolled out to our emulator
-      # image.
-      if self.is_emulator:
-        self.skipTest('Emulator Bluetooth HAL does not support CIS peripheral.')
 
     # Enable Connected Isochronous Stream.
     async with self.assert_not_timeout(_DEFAULT_CONNECTION_TIMEOUT_SECONDS):

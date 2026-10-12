@@ -502,9 +502,17 @@ class HidHostTest(navi_test_base.TwoDevicesTestBase):
       self.logger.info("[DUT] Set the idle time to %sms", idle_time_ms)
       self.dut.bt.setHidHostIdleTime(self.ref.address, idle_time)
 
-      # TODO: Remove the sleep and use the callback instead.
-      self.logger.info("[DUT] Wait for the idle time changed")
-      await asyncio.sleep(0.5)
+      if self.dut.bluetooth_mainline_version < 361600000:
+        self.logger.info("[DUT] Wait for the idle time changed")
+        await asyncio.sleep(0.5)
+      else:
+        self.logger.info("[DUT] Wait for handshake event")
+        await dut_hid_cb.wait_for_event(
+            bl4a_api.HidHostHandshake(
+                address=self.ref.address,
+                status=hid.HandshakeMessage.ResultCode.SUCCESSFUL,
+            )
+        )
 
       self.logger.info("[DUT] Get the idle time")
       self.dut.bt.getHidHostIdleTime(self.ref.address)

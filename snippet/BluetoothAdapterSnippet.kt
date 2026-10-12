@@ -343,8 +343,18 @@ class BluetoothAdapterSnippet : Snippet {
   /** Starts a TAK session for a given device. */
   @AsyncRpc(description = "Start TAK session.")
   @SuppressLint("NewApi")
-  fun startTakSession(callbackId: String, address: String, keyList: IntArray, uuidStr: String) {
-    val device = bluetoothAdapter.getRemoteDevice(address)
+  fun startTakSession(
+    callbackId: String,
+    address: String,
+    keyList: IntArray,
+    uuidStr: String,
+    @RpcOptional addressType: Int? = null,
+  ) {
+    val device =
+      bluetoothAdapter.getRemoteLeDevice(
+        address,
+        addressType ?: BluetoothDevice.ADDRESS_TYPE_RANDOM,
+      )
     val key = keyList.map { it.toByte() }.toByteArray()
     val uuid = ParcelUuid(UUID.fromString(uuidStr))
 
@@ -492,6 +502,26 @@ class BluetoothAdapterSnippet : Snippet {
     } else {
       // Cannot precisely check connection state by transport before U
       device.isConnected
+    }
+  }
+
+  /**
+   * Returns the ACL connection handle associated with an open connection to this device on the
+   * given [transport].
+   *
+   * @param address Bluetooth MAC address of remote device.
+   * @param transport The [BluetoothDevice.Transport] type ([BluetoothDevice.TRANSPORT_BREDR] or
+   *   [BluetoothDevice.TRANSPORT_LE]).
+   * @return The 12-bit ACL connection handle (0x0000 to 0x0EFF), or -1 if no connection exists.
+   */
+  @Rpc(description = "Get the ACL connection handle for a device on given transport")
+  fun getConnectionHandle(address: String, transport: Int): Int {
+    val device = bluetoothAdapter.getRemoteDevice(address)
+    return if (Build.VERSION.SDK_INT >= 34) {
+      val handle = device.getConnectionHandle(transport)
+      if (handle == BluetoothDevice.ERROR) -1 else handle
+    } else {
+      -1
     }
   }
 

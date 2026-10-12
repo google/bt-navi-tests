@@ -53,7 +53,6 @@ _STREAM_TYPE_CALL = android_constants.StreamType.CALL
 _PROPERTY_SWB_SUPPORTED = "bluetooth.hfp.swb.supported"
 _RECORDING_PATH = "/storage/self/primary/Recordings/record.wav"
 _HFP_FRAME_DURATION = 0.0075  # 7.5ms
-_MAX_FRAME_SIZE = 240
 _ACTION_VOICE_COMMAND = "android.intent.action.VOICE_COMMAND"
 _MOCK_CONNECTION_SERVICE_CLASS = (
     f"{android_constants.PACKAGE_NAME_BLUETOOTH_SNIPPET}.MockConnectionService"
@@ -154,6 +153,9 @@ class HfpAgTest(navi_test_base.TwoDevicesTestBase):
     self.dut.bt.disconnectAllCalls()
     self.logger.info("[DUT] Stop audio.")
     self.dut.bt.audioStop()
+
+    self.logger.info("[DUT] Reset microphone mute state.")
+    self.dut.bt.setMicrophoneMuteState(False)
 
     self.logger.info("[DUT] Reset audio attributes.")
     self.dut.bl4a.set_audio_attributes(
@@ -1062,15 +1064,14 @@ class HfpAgTest(navi_test_base.TwoDevicesTestBase):
         )
 
   @navi_test_base.parameterized(constants.TestRole.DUT, constants.TestRole.REF)
-  @navi_test_base.retry(max_count=2)
   async def test_adjust_speaker_volume(
       self, issuer: constants.TestRole
   ) -> None:
     """Tests adjusting speaker volume with HFP.
 
     Test steps:
-      1. Place a call.
-      2. Setup HFP connection.
+      1. Setup HFP connection.
+      2. Place a call.
       3. Adjust volume.
 
     Args:
@@ -1098,75 +1099,84 @@ class HfpAgTest(navi_test_base.TwoDevicesTestBase):
     with (
         self.dut.bl4a.register_callback(_Module.HFP_AG) as ag_cb,
         self.dut.bl4a.register_callback(_Module.AUDIO) as audio_cb,
-        self.dut.bl4a.make_phone_call(
-            _CALLER_NAME,
-            _CALLER_NUMBER,
-            constants.Direction.OUTGOING,
-        ),
     ):
       await self.classic_connect_and_pair(connect_profiles=True)
 
-      self.logger.info("[DUT] Set audio attributes for voice communication.")
-      self.dut.bl4a.set_audio_attributes(
-          bl4a_api.AudioAttributes(
-              content_type=bl4a_api.AudioAttributes.ContentType.SPEECH,
-              usage=bl4a_api.AudioAttributes.Usage.VOICE_COMMUNICATION,
-          ),
-          handle_audio_focus=False,
-      )
-
-      self.dut.bt.audioSetRepeat(android_constants.RepeatMode.ONE)
-      self.dut.bt.audioPlaySine()
-
-      self.logger.info("[DUT] Wait for SCO connected.")
+      self.logger.info("[DUT] Wait for HFP connected.")
       await ag_cb.wait_for_event(
-          _HfpAgAudioStateChange(
-              address=self.ref.address, state=_ScoState.CONNECTED
-          )
+          bl4a_api.ProfileActiveDeviceChanged(address=self.ref.address),
       )
 
       self.logger.info("[REF] Wait for HFP connected.")
       async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
         ref_hfp_protocol = await ref_hfp_protocol_queue.get()
 
-      if not self.dut.device.is_emulator:
-        self.logger.info("[DUT] Wait for SCO active.")
-        await audio_cb.wait_for_event(
-            bl4a_api.CommunicationDeviceChanged(
-                self.ref.address,
-                device_type=android_constants.AudioDeviceType.BLUETOOTH_SCO,
+      with self.dut.bl4a.make_phone_call(
+          _CALLER_NAME,
+          _CALLER_NUMBER,
+          constants.Direction.OUTGOING,
+      ):
+        self.logger.info("[DUT] Set audio attributes for voice communication.")
+        self.dut.bl4a.set_audio_attributes(
+            bl4a_api.AudioAttributes(
+                content_type=bl4a_api.AudioAttributes.ContentType.SPEECH,
+                usage=bl4a_api.AudioAttributes.Usage.VOICE_COMMUNICATION,
+            ),
+            handle_audio_focus=False,
+        )
+
+        self.dut.bt.audioSetRepeat(android_constants.RepeatMode.ONE)
+        self.dut.bt.audioPlaySine()
+
+        self.logger.info("[DUT] Wait for SCO connected.")
+        await ag_cb.wait_for_event(
+            _HfpAgAudioStateChange(
+                address=self.ref.address, state=_ScoState.CONNECTED
             )
         )
 
-      # Volume change cannot be broadcasted to Bluetooth at the moment
-      # when SCO becomes active.
-      self.logger.info("[DUT] Wait for volume change to be ready.")
-      await asyncio.sleep(0.5)
-
-      for expected_volume in range(1, _HFP_MAX_VOLUME + 1):
-        if expected_volume == self.dut.bt.getVolume(_STREAM_TYPE_CALL):
-          continue
-
-        if issuer == constants.TestRole.DUT:
-          self.logger.info("[DUT] Set volume to %d.", expected_volume)
-          self.dut.bt.setVolume(_STREAM_TYPE_CALL, expected_volume)
-
-          self.logger.info("[REF] Wait for volume changed event.")
-          async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
-            async with ref_hfp_protocol.speaker_volume_condition:
-              await ref_hfp_protocol.speaker_volume_condition.wait_for(
-                  lambda: ref_hfp_protocol.speaker_volume == expected_volume,  # pylint: disable=cell-var-from-loop
-              )
-        else:
-          self.logger.info("[REF] Set volume to %d.", expected_volume)
-          await ref_hfp_protocol.execute_command(f"AT+VGS={expected_volume}")
-
-          self.logger.info("[DUT] Wait for volume changed event.")
+        if not self.dut.device.is_emulator:
+          self.logger.info("[DUT] Wait for SCO active.")
           await audio_cb.wait_for_event(
-              bl4a_api.VolumeChanged(
-                  stream_type=_STREAM_TYPE_CALL, volume_value=expected_volume
-              ),
+              bl4a_api.CommunicationDeviceChanged(
+                  self.ref.address,
+                  device_type=android_constants.AudioDeviceType.BLUETOOTH_SCO,
+              )
           )
+
+        # Volume change cannot be broadcasted to Bluetooth at the moment
+        # when SCO becomes active.
+        self.logger.info("[DUT] Wait for volume change to be ready.")
+        await asyncio.sleep(0.5)
+
+        for expected_volume in range(1, _HFP_MAX_VOLUME + 1):
+          if expected_volume == self.dut.bt.getVolume(_STREAM_TYPE_CALL):
+            continue
+
+          if issuer == constants.TestRole.DUT:
+            self.logger.info("[DUT] Set volume to %d.", expected_volume)
+            self.dut.bt.setVolume(_STREAM_TYPE_CALL, expected_volume)
+
+            self.logger.info("[REF] Wait for volume changed event.")
+
+            def _is_target_volume(target_volume: int = expected_volume) -> bool:
+              return ref_hfp_protocol.speaker_volume == target_volume
+
+            async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+              async with ref_hfp_protocol.speaker_volume_condition:
+                await ref_hfp_protocol.speaker_volume_condition.wait_for(
+                    _is_target_volume
+                )
+          else:
+            self.logger.info("[REF] Set volume to %d.", expected_volume)
+            await ref_hfp_protocol.execute_command(f"AT+VGS={expected_volume}")
+
+            self.logger.info("[DUT] Wait for volume changed event.")
+            await audio_cb.wait_for_event(
+                bl4a_api.VolumeChanged(
+                    stream_type=_STREAM_TYPE_CALL, volume_value=expected_volume
+                ),
+            )
 
   async def test_query_call_status(self) -> None:
     """Tests querying call status from HF.
@@ -1812,6 +1822,287 @@ class HfpAgTest(navi_test_base.TwoDevicesTestBase):
           bl4a_api.ProfileActiveDeviceChanged(address=self.ref.address),
           timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
       )
+
+  async def test_reconnecting_on_ringing(self) -> None:
+    """Tests HFP reconnection while an incoming call is actively ringing.
+
+    Validates that when an HF device reconnects during an incoming call, the AG
+    properly sends the callsetup indicator (+CIEV: callsetup=1) during Service
+    Level Connection (SLC) establishment, allowing the headset to indicate the
+    ringing call to the user.
+
+    Test steps:
+      1. Establish HFP connection and pair DUT with REF.
+      2. Disconnect HFP connection.
+      3. Simulate an incoming call on DUT so Telecom enters RINGING state.
+      4. Reconnect HFP while the call is actively ringing.
+      5. Wait for SLC to initialize.
+      6. Verify the AG indicator reports CALL_SETUP = INCOMING_CALL_PROCESS.
+    """
+    hfp_configuration = hfp_ext.make_hf_configuration()
+    ref_hfp_protocol_queue = hfp_ext.HfProtocol.setup_server(
+        self.ref.device,
+        sdp_handle=_HFP_SDP_HANDLE,
+        configuration=hfp_configuration,
+    )
+
+    with self.dut.bl4a.register_callback(_Module.HFP_AG) as ag_cb:
+      await self.classic_connect_and_pair(connect_profiles=True)
+      async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+        ref_hfp_protocol = await ref_hfp_protocol_queue.get()
+        await ref_hfp_protocol.slc_initialized.wait()
+
+      self.logger.info("[DUT] Wait for HFP connected.")
+      await ag_cb.wait_for_event(
+          bl4a_api.ProfileActiveDeviceChanged(address=self.ref.address),
+          timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+      )
+
+      self.logger.info("[DUT] Disconnect HFP.")
+      await self.disconnect_with_check(
+          self.ref.address, android_constants.Transport.CLASSIC
+      )
+
+      self.logger.info("[DUT] Wait for HFP disconnected.")
+      await ag_cb.wait_for_event(
+          bl4a_api.ProfileActiveDeviceChanged(address=None),
+          timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+      )
+
+      with (
+          self.dut.bl4a.register_callback(_Module.TELECOM) as telecom_cb,
+          self.dut.bl4a.make_phone_call(
+              _CALLER_NAME,
+              _CALLER_NUMBER,
+              constants.Direction.INCOMING,
+          ),
+      ):
+        await self._wait_for_call_state(telecom_cb, _CallState.RINGING)
+
+        self.logger.info("[DUT] Reconnect HFP while ringing.")
+        self.dut.bt.connect(self.ref.address)
+
+        async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+          ref_hfp_protocol2 = await ref_hfp_protocol_queue.get()
+          await ref_hfp_protocol2.slc_initialized.wait()
+
+        condition = asyncio.Condition()
+
+        @ref_hfp_protocol2.on(ref_hfp_protocol2.EVENT_AG_INDICATOR)
+        async def _(*_) -> None:
+          async with condition:
+            condition.notify_all()
+
+        async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+          async with condition:
+            call_setup = next(
+                indicator
+                for indicator in ref_hfp_protocol2.ag_indicators
+                if indicator.indicator == _AgIndicator.CALL_SETUP
+            )
+            await condition.wait_for(
+                lambda: call_setup.current_status
+                == hfp.CallSetupAgIndicator.INCOMING_CALL_PROCESS
+            )
+
+      self.logger.info("[DUT] Disconnect HFP.")
+      await self.disconnect_with_check(
+          self.ref.address, android_constants.Transport.CLASSIC
+      )
+      await ag_cb.wait_for_event(
+          bl4a_api.ProfileActiveDeviceChanged(address=None),
+          timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+      )
+
+  async def test_ec_and_nr(self) -> None:
+    """Tests disabling Echo Cancellation and Noise Reduction via AT+NREC=0."""
+    hfp_configuration = hfp_ext.make_hf_configuration(
+        supported_hf_features=[hfp.HfFeature.EC_NR],
+    )
+    ref_hfp_protocol_queue = hfp_ext.HfProtocol.setup_server(
+        self.ref.device,
+        sdp_handle=_HFP_SDP_HANDLE,
+        configuration=hfp_configuration,
+    )
+
+    with self.dut.bl4a.register_callback(_Module.HFP_AG) as ag_cb:
+      await self.classic_connect_and_pair(connect_profiles=True)
+      async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+        ref_hfp_protocol = await ref_hfp_protocol_queue.get()
+        await ref_hfp_protocol.slc_initialized.wait()
+
+      await ag_cb.wait_for_event(
+          bl4a_api.ProfileActiveDeviceChanged(address=self.ref.address),
+          timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+      )
+
+      self.logger.info(
+          "[REF] Disable Echo Cancellation and Noise Reduction via AT+NREC=0."
+      )
+      # HFP Section 4.23: The HF requests the AG to turn off its internal
+      # Echo Canceling and Noise Reduction (EC/NR) function via AT+NREC=0.
+      # execute_command() validates that the AG responds with OK, raising
+      # a ProtocolError if the AG rejects or fails the command.
+      await ref_hfp_protocol.execute_command("AT+NREC=0")
+
+  @navi_test_base.parameterized(
+      constants.Direction.INCOMING,
+      constants.Direction.OUTGOING,
+  )
+  async def test_hfp_disconnect_from_hf(
+      self, call_direction: constants.Direction
+  ) -> None:
+    """Tests disconnecting call from HF via AT+CHUP."""
+    if self._is_ranchu_emulator(self.dut.device):
+      self.skipTest("[DUT] Call control is not supported on Ranchu emulator.")
+
+    hfp_configuration = hfp_ext.make_hf_configuration()
+    ref_hfp_protocol_queue = hfp_ext.HfProtocol.setup_server(
+        self.ref.device,
+        sdp_handle=_HFP_SDP_HANDLE,
+        configuration=hfp_configuration,
+    )
+
+    with self.dut.bl4a.register_callback(_Module.HFP_AG) as ag_cb:
+      await self.classic_connect_and_pair(connect_profiles=True)
+      async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+        ref_hfp_protocol = await ref_hfp_protocol_queue.get()
+        await ref_hfp_protocol.slc_initialized.wait()
+
+      await ag_cb.wait_for_event(
+          bl4a_api.ProfileActiveDeviceChanged(address=self.ref.address),
+          timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+      )
+
+      with (
+          self.dut.bl4a.register_callback(_Module.TELECOM) as telecom_cb,
+          self.dut.bl4a.make_phone_call(
+              _CALLER_NAME,
+              _CALLER_NUMBER,
+              call_direction,
+          ) as call,
+      ):
+        self.dut.bt.audioSetRepeat(android_constants.RepeatMode.ONE)
+        self.dut.bl4a.set_audio_attributes(
+            bl4a_api.AudioAttributes(
+                content_type=bl4a_api.AudioAttributes.ContentType.SPEECH,
+                usage=bl4a_api.AudioAttributes.Usage.VOICE_COMMUNICATION,
+            ),
+            handle_audio_focus=False,
+        )
+        self.dut.bt.audioPlaySine()
+
+        if call_direction == constants.Direction.INCOMING:
+          await self._wait_for_call_state(telecom_cb, _CallState.RINGING)
+          await ref_hfp_protocol.answer_incoming_call()
+        else:
+          await self._wait_for_call_state(
+              telecom_cb, _CallState.CONNECTING, _CallState.DIALING
+          )
+          call.answer()
+
+        await self._wait_for_call_state(telecom_cb, _CallState.ACTIVE)
+
+        await ag_cb.wait_for_event(
+            _HfpAgAudioStateChange(
+                address=self.ref.address, state=_ScoState.CONNECTED
+            ),
+            timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+        )
+
+        self.logger.info("[REF] Disconnect call via AT+CHUP.")
+        await ref_hfp_protocol.execute_command("AT+CHUP")
+
+        await self._wait_for_call_state(telecom_cb, _CallState.DISCONNECTED)
+        await ag_cb.wait_for_event(
+            _HfpAgAudioStateChange(
+                address=self.ref.address, state=_ScoState.DISCONNECTED
+            ),
+            timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+        )
+
+  @navi_test_base.TwoDevicesTestBase.require_flag(
+      "com.android.bluetooth.flags.microphone_mute_gain_retain"
+  )
+  @navi_test_base.parameterized(constants.TestRole.DUT, constants.TestRole.REF)
+  async def test_mic_gain(self, issuer: constants.TestRole) -> None:
+    """Tests microphone gain synchronization between AG and HF."""
+    if self._is_ranchu_emulator(self.dut.device):
+      self.skipTest("[DUT] Call control is not supported on Ranchu emulator.")
+
+    self.test_case_context.callback(self.dut.bt.setMicrophoneMuteState, False)
+
+    hfp_configuration = hfp_ext.make_hf_configuration(
+        supported_hf_features=[hfp.HfFeature.REMOTE_VOLUME_CONTROL],
+    )
+    ref_hfp_protocol_queue = hfp_ext.HfProtocol.setup_server(
+        self.ref.device,
+        sdp_handle=_HFP_SDP_HANDLE,
+        configuration=hfp_configuration,
+    )
+
+    with (
+        self.dut.bl4a.register_callback(_Module.HFP_AG) as ag_cb,
+        self.dut.bl4a.register_callback(_Module.AUDIO) as audio_cb,
+    ):
+      await self.classic_connect_and_pair(connect_profiles=True)
+      async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+        ref_hfp_protocol = await ref_hfp_protocol_queue.get()
+        await ref_hfp_protocol.slc_initialized.wait()
+
+      await ag_cb.wait_for_event(
+          bl4a_api.ProfileActiveDeviceChanged(address=self.ref.address),
+          timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+      )
+
+      with (
+          self.dut.bl4a.register_callback(_Module.TELECOM) as telecom_cb,
+          self.dut.bl4a.make_phone_call(
+              _CALLER_NAME,
+              _CALLER_NUMBER,
+              constants.Direction.OUTGOING,
+          ) as call,
+      ):
+        await self._wait_for_call_state(
+            telecom_cb, _CallState.CONNECTING, _CallState.DIALING
+        )
+        call.answer()
+        await self._wait_for_call_state(telecom_cb, _CallState.ACTIVE)
+
+        self.dut.bt.audioSetRepeat(android_constants.RepeatMode.ONE)
+        self.dut.bl4a.set_audio_attributes(
+            bl4a_api.AudioAttributes(
+                content_type=bl4a_api.AudioAttributes.ContentType.SPEECH,
+                usage=bl4a_api.AudioAttributes.Usage.VOICE_COMMUNICATION,
+            ),
+            handle_audio_focus=False,
+        )
+        self.dut.bt.audioPlaySine()
+
+        await ag_cb.wait_for_event(
+            _HfpAgAudioStateChange(
+                address=self.ref.address, state=_ScoState.CONNECTED
+            ),
+            timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+        )
+
+        if issuer == constants.TestRole.DUT:
+          target_mute = not self.dut.bt.getMicrophoneMuteState()
+          self.dut.bt.setMicrophoneMuteState(target_mute)
+          async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
+            async with ref_hfp_protocol.microphone_volume_condition:
+              await ref_hfp_protocol.microphone_volume_condition.wait_for(
+                  lambda: (ref_hfp_protocol.microphone_volume == 0)
+                  is target_mute
+              )
+        else:
+          target_gain = 7 if self.dut.bt.getMicrophoneMuteState() else 0
+          await ref_hfp_protocol.execute_command(f"AT+VGM={target_gain}")
+          ref_hfp_protocol.microphone_volume = target_gain
+          await audio_cb.wait_for_event(
+              bl4a_api.MuteChanged(is_mute=(target_gain == 0)),
+              timeout=_DEFAULT_STEP_TIMEOUT_SECONDS,
+          )
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ from bumble import hci
 from bumble import pairing
 from bumble import smp
 from mobly import test_runner
+from typing_extensions import override
 
 from navi.tests import navi_test_base
 from navi.utils import android_constants
@@ -45,6 +46,7 @@ _TERMINATED_BOND_STATES = (
     android_constants.BondState.NONE,
 )
 _DEFAULT_STEP_TIMEOUT_SECONDS = 15.0
+_SMP_RSP_TIMEOUT_MS = 5000
 
 
 class TestVariant(enum.Enum):
@@ -65,6 +67,14 @@ _DEFAULT_SETUP_TIMEOUT_SECONDS = 15.0
 
 class LePairingTest(navi_test_base.TwoDevicesTestBase):
 
+  @override
+  async def async_setup_class(self) -> None:
+    await super().async_setup_class()
+    self.setprop_for_class_context(
+        android_constants.Property.SMP_RSP_TIMEOUT_MS,
+        str(_SMP_RSP_TIMEOUT_MS),
+    )
+
   @retry.retry_on_exception()
   async def _make_outgoing_connection(
       self, ref_connection_address_type: _AddressType, create_bond: bool
@@ -82,7 +92,7 @@ class LePairingTest(navi_test_base.TwoDevicesTestBase):
     with pyee_extensions.EventWatcher() as watcher:
       ref_dut_connection_future = asyncio.get_running_loop().create_future()
 
-      @watcher.on(self.ref.device, 'connection')
+      @watcher.on(self.ref.device, self.ref.device.EVENT_CONNECTION)
       def _(connection: device.Connection) -> None:
         if connection.transport == core.BT_LE_TRANSPORT:
           ref_dut_connection_future.set_result(connection)
@@ -1140,6 +1150,131 @@ class LePairingTest(navi_test_base.TwoDevicesTestBase):
     self.logger.info('[REF] Wait for pairing to complete.')
     async with self.assert_not_timeout(_DEFAULT_STEP_TIMEOUT_SECONDS):
       await ref_pairing_future
+
+  async def test_le_repairing_after_smp_timeout_maintains_bond(self) -> None:
+    """Tests that repairing after an SMP response timeout creates a valid bond.
+
+    Test steps:
+      1. Pair from DUT.
+      2. Pause accept in pairing delegate on REF to trigger SMP timeout on DUT.
+      3. Wait for bond failure due to SMP timeout.
+      4. Allow accept on REF and pair from DUT again.
+      5. Accept on both sides.
+      6. Verify the bond is created (BONDED).
+      7. Disconnect ACL from REF.
+      8. Reconnect from REF to DUT.
+      9. Discover services and encrypt connection.
+      10. Verify bond state remains BONDED and no unexpected pairing request.
+    """
+
+    class NoAcceptPairingDelegate(pairing.PairingDelegate):
+
+      async def accept(self) -> bool:
+        await asyncio.Event().wait()
+        return True
+
+    self.ref.device.pairing_config_factory = lambda _: pairing.PairingConfig(
+        sc=True,
+        mitm=True,
+        bonding=True,
+        identity_address_type=pairing.PairingConfig.AddressType.RANDOM,
+        delegate=NoAcceptPairingDelegate(),
+    )
+
+    self.logger.info('[REF] Start advertising with random address.')
+    await self.ref.device.start_advertising(
+        auto_restart=True, own_address_type=hci.OwnAddressType.RANDOM
+    )
+
+    adapter_cb = self.dut.bl4a.register_callback(bl4a_api.Module.ADAPTER)
+    self.test_case_context.push(adapter_cb)
+
+    await self._make_outgoing_connection(_AddressType.RANDOM, create_bond=True)
+
+    self.logger.info('[DUT] Wait for bond failure due to SMP timeout.')
+    await adapter_cb.wait_for_event(
+        bl4a_api.BondStateChanged(
+            address=self.ref.random_address,
+            state=android_constants.BondState.NONE,
+        ),
+        timeout=60.0,
+    )
+
+    # Enable accept on REF and clear any stale SMP sessions.
+    self.ref.device.smp_manager.sessions.clear()
+    # Reset pairing config factory to allow pairing.
+    self.ref.device.pairing_config_factory = lambda _: pairing.PairingConfig(
+        sc=True,
+        mitm=True,
+        bonding=True,
+        identity_address_type=pairing.PairingConfig.AddressType.RANDOM,
+    )
+
+    self.logger.info('[DUT] Pair again with random address.')
+    await self._make_outgoing_connection(_AddressType.RANDOM, create_bond=True)
+
+    self.logger.info('[DUT] Wait for pairing request again.')
+    await adapter_cb.wait_for_event(
+        bl4a_api.PairingRequest(
+            address=self.ref.random_address,
+            variant=matcher.ANY,
+            pin=matcher.ANY,
+        ),
+        timeout=_DEFAULT_SETUP_TIMEOUT_SECONDS,
+    )
+
+    self.logger.info('[DUT] Accept pairing on DUT.')
+    self.assertTrue(
+        self.dut.bt.setPairingConfirmation(self.ref.random_address, True),
+        '[DUT] Failed to accept pairing',
+    )
+
+    self.logger.info('[DUT] Wait for bond state changed.')
+    bond_state_changed_event = await adapter_cb.wait_for_event(
+        bl4a_api.BondStateChanged(
+            address=self.ref.random_address,
+            state=matcher.any_of(*_TERMINATED_BOND_STATES),
+        ),
+        timeout=_DEFAULT_SETUP_TIMEOUT_SECONDS,
+    )
+    self.assertEqual(
+        bond_state_changed_event.state,
+        android_constants.BondState.BONDED,
+        '[DUT] Bond state should be BONDED after pairing',
+    )
+
+    self.logger.info('[DUT] Wait for ACL disconnected.')
+    await adapter_cb.wait_for_event(
+        bl4a_api.AclDisconnected(
+            address=self.ref.random_address,
+            transport=android_constants.Transport.LE,
+        ),
+        timeout=_DEFAULT_SETUP_TIMEOUT_SECONDS,
+    )
+
+    await self.ref.device.stop_advertising()
+
+    self.logger.info('[REF] Reconnect to DUT.')
+    ref_dut_acl = await self._make_incoming_connection(
+        hci.OwnAddressType.RANDOM
+    )
+    async with self.assert_not_timeout(_DEFAULT_SETUP_TIMEOUT_SECONDS):
+      self.logger.info('[REF] Discover services.')
+      await ref_dut_acl.gatt_client.discover_services()
+
+      self.logger.info('[REF] Encrypt connection.')
+      await ref_dut_acl.encrypt()
+
+    self.logger.info('[DUT] Verify bond state remains BONDED.')
+    self.assertEqual(
+        self.dut.bt.getBondState(self.ref.random_address),
+        android_constants.BondState.BONDED,
+        '[DUT] Bond state should remain BONDED after reconnection',
+    )
+    self.assertEmpty(
+        adapter_cb.get_all_events(bl4a_api.PairingRequest),
+        '[DUT] Unexpected pairing request after reconnection',
+    )
 
   async def test_security_request_mitm_bit_after_unauthenticated_bonding(
       self,

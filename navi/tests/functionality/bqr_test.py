@@ -14,6 +14,7 @@
 
 """Tests for Bluetooth Quality Report."""
 
+from collections.abc import Mapping
 import enum
 from unittest import mock
 
@@ -30,6 +31,28 @@ from navi.utils import bl4a_api
 
 _DEFAULT_STEP_TIMEOUT_SECONDS = 5.0
 _MASKED_ADDRESS = "FF:FF:FF:FF:FF:FF"
+
+# BQR offload properties. When offload is enabled, the controller hands BQR
+# events to the sensor hub, which buffers them and flushes them on the offload
+# schedule instead of reporting them to the host as they occur. The offload
+# configuration in use puts APPROACH_LSTO (event id 2) in a slot with a 300
+# second timeout, so the event these tests assert on arrives minutes late: on
+# ZP1A.260914.002 the controller captured it 164ms after the trigger but the
+# host only saw it 76 seconds later, long past the step timeout.
+#
+# The properties are read by the Pixel HAL in `BqrOffload::OnBluetoothChipReady`
+# (vendor/google/connectivity/bluetooth/bluetooth_hal/pixel/phone/client/
+# bqr_offload.cc), which programs the sensor hub over the EFW transport. The
+# sensor hub is not reset when the Bluetooth adapter is bounced, so clearing the
+# properties only takes effect after a reboot.
+_BQR_OFFLOAD_PROPERTIES = (
+    "persist.bluetooth.bqr.offload.associate_eventid",
+    "persist.bluetooth.bqr.offload.associate_eventmask",
+    "persist.bluetooth.bqr.offload.eventid",
+    "persist.bluetooth.bqr.offload.mode",
+    "persist.bluetooth.bqr.offload.timeout_s",
+    "persist.bluetooth.bqr.offload.weight",
+)
 
 
 class BqrEventMaskBitIndex(enum.IntFlag):
@@ -57,10 +80,66 @@ class BluetoothQualityReportTest(navi_test_base.TwoDevicesTestBase):
   @override
   async def async_setup_class(self) -> None:
     await super().async_setup_class()
+
+    self._disable_bqr_offload()
+
     bqr_event_mask_str = self.dut.getprop("persist.bluetooth.bqr.event_mask")
     if not bqr_event_mask_str:
       raise signals.TestAbortClass("BQR is not enabled on DUT.")
     self.bqr_event_mask = int(bqr_event_mask_str)
+
+  def _disable_bqr_offload(self) -> None:
+    """Clears the BQR offload properties for the duration of the class."""
+    original_values = {
+        prop: self.dut.getprop(prop) for prop in _BQR_OFFLOAD_PROPERTIES
+    }
+    if not any(original_values.values()):
+      self.logger.info("[DUT] BQR offload is already disabled.")
+      return
+
+    # `persist.bluetooth.bqr.*` is not writable by the shell user.
+    # `root_adb()` also waits for the device to come back, because restarting
+    # adbd makes it temporarily disappear.
+    self.dut.device.root_adb()
+    self.test_class_context.callback(
+        lambda: self._restore_bqr_offload(original_values)
+    )
+
+    for prop, original_value in original_values.items():
+      if not original_value:
+        continue
+      self.logger.info("[DUT] Clearing %s (was %r)", prop, original_value)
+      self.dut.setprop(prop, "")
+
+    # A reboot is required rather than an adapter bounce: the buffered events
+    # live on the sensor hub, which stays up across Bluetooth off/on, and the
+    # HAL only skips `BqrOffloadInit` when the properties are empty, it never
+    # tears down a configuration that is already programmed.
+    self.logger.info("[DUT] Reboot to apply BQR offload settings.")
+    self.dut.device.reboot()
+    self.dut.reload_snippet()
+
+    for prop in _BQR_OFFLOAD_PROPERTIES:
+      self.assertFalse(
+          self.dut.getprop(prop),
+          f"Failed to clear {prop}, got {self.dut.getprop(prop)!r}.",
+      )
+
+  def _restore_bqr_offload(
+      self, original_values: Mapping[str, str | None]
+  ) -> None:
+    """Restores the properties cleared by `_disable_bqr_offload`.
+
+    The device is left with offload inactive until it is next rebooted, because
+    the restored values are only picked up by the HAL at boot.
+
+    Args:
+      original_values: Property name to the value it held before it was cleared.
+    """
+    # Root is dropped by the reboot in `_disable_bqr_offload`.
+    self.dut.device.root_adb()
+    for prop, original_value in original_values.items():
+      self.dut.setprop(prop, original_value)
 
   async def test_approach_lsto_classic_connection(self) -> None:
     """Tests classic connection approach LSTO."""

@@ -142,12 +142,12 @@ class MediaBrowserSnippet : Snippet {
       }
     val result: List<MediaBrowserCompat.MediaItem>
     try {
-      browser.subscribe(mediaId, Bundle(), callback)
+      instrumentation.runOnMainSync { browser.subscribe(mediaId, Bundle(), callback) }
       result =
         runBlocking { withTimeoutOrNull(TIMEOUT) { deferred.await() } }
           ?: throw IllegalStateException("Timeout getting children for $mediaId")
     } finally {
-      browser.unsubscribe(mediaId, callback)
+      instrumentation.runOnMainSync { browser.unsubscribe(mediaId, callback) }
     }
     return result
   }

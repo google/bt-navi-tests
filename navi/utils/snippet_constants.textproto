@@ -955,6 +955,61 @@ constants {
 # BluetoothLeAudioSnippet  #
 # ======================== #
 
+constants {
+  name: "CHANNEL_COUNT"
+  string_value: "channel_count"
+}
+
+constants {
+  name: "FRAME_DURATION"
+  string_value: "frame_duration"
+}
+
+constants {
+  name: "OCTETS_PER_FRAME"
+  string_value: "octets_per_frame"
+}
+
+constants {
+  name: "MIN_OCTETS_PER_FRAME"
+  string_value: "min_octets_per_frame"
+}
+
+constants {
+  name: "MAX_OCTETS_PER_FRAME"
+  string_value: "max_octets_per_frame"
+}
+
+constants {
+  name: "INPUT_CODEC_CONFIG"
+  string_value: "input_codec_config"
+}
+
+constants {
+  name: "OUTPUT_CODEC_CONFIG"
+  string_value: "output_codec_config"
+}
+
+constants {
+  name: "INPUT_CODECS_LOCAL_CAPABILITIES"
+  string_value: "input_codecs_local_capabilities"
+}
+
+constants {
+  name: "OUTPUT_CODECS_LOCAL_CAPABILITIES"
+  string_value: "output_codecs_local_capabilities"
+}
+
+constants {
+  name: "INPUT_CODECS_SELECTABLE_CAPABILITIES"
+  string_value: "input_codecs_selectable_capabilities"
+}
+
+constants {
+  name: "OUTPUT_CODECS_SELECTABLE_CAPABILITIES"
+  string_value: "output_codecs_selectable_capabilities"
+}
+
 # ===================== #
 # AudioSnippet          #
 # ===================== #
